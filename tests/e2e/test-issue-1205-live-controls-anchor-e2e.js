@@ -73,14 +73,15 @@ async function assertAnchoredToMeshLive(page, label) {
     assert(!r.isLivePage, '#liveControls parent must not be .live-page directly (was the regression)');
   });
 
-  await step(label + ' toggle inputs reachable (Heat/Ghosts/Audio render)', async () => {
+  await step(label + ' Heat/Audio controls render with the unknown-hop explanation', async () => {
     const have = await page.evaluate(() => ({
       heat: !!document.getElementById('liveHeatToggle'),
       ghost: !!document.getElementById('liveGhostToggle'),
       audio: !!document.getElementById('liveAudioToggle'),
+      gaps: document.getElementById('liveControls').textContent.includes('Unknown hops leave gaps'),
     }));
-    assert(have.heat && have.ghost && have.audio,
-      `toggles missing from DOM: ${JSON.stringify(have)}`);
+    assert(have.heat && !have.ghost && have.audio && have.gaps,
+      `unexpected Live controls: ${JSON.stringify(have)}`);
   });
 }
 
