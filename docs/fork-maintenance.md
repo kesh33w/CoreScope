@@ -1,6 +1,6 @@
 # Fork maintenance
 
-This fork retains upstream CoreScope history. Its default branch integrates the unified SacMesh changes with upstream commit `1577b57` (after v3.16.0). The previously deployed `v3.15.0+sacmesh.1` remains a separate tested release, not a second fork. It keeps upstream licensing and attribution. It is not an upstream release.
+This fork retains upstream CoreScope history. Release `v3.17.0+sacmesh.1` integrates the unified SacMesh changes with the upstream `v3.17.0` tag. The previously deployed `v3.15.0+sacmesh.1` remains a separate tested release, not a second fork. It keeps upstream licensing and attribution. It is not an upstream release.
 
 ## Included changes
 
@@ -21,7 +21,7 @@ Build the web server, ingestor and frontend assets from the same reviewed source
 
 A release must not replace site-specific broker subscriptions, region filters, blacklists, retention settings, memory limits, private telemetry paths or trusted-proxy lists. Changing a binary is not permission to change those settings.
 
-The web server keeps the analyzer database read-only. The ingestor remains the only writer of measurements and schema changes. The SacMesh changes add no analyzer schema migration of their own. The newer upstream base adds observer radio history and neighbor-report tables. With accounts enabled, it also upgrades the separate users database from schema v6 to v8; older binaries cannot open that upgraded users database. Back up both databases before deployment and test rollback on copies. Merging source does not upgrade a running instance.
+The web server keeps the analyzer database read-only. The ingestor remains the only writer of measurements and schema changes. The SacMesh changes add no analyzer schema migration of their own. The newer upstream base adds observer radio history and neighbor-report tables. With accounts enabled, it also upgrades the separate users database from schema v6 to v8; older binaries cannot open that upgraded users database. Back up both databases before deployment and test rollback on copies. There is no further upstream database migration from v3.16 to v3.17. Merging source does not upgrade a running instance.
 
 ## Release checks
 
@@ -31,7 +31,7 @@ Build with CGO enabled. A build with CGO disabled can link a SQLite stub and sti
 
 Check the running executable and frontend hashes after deployment. A container tag alone does not prove which files are running. Health/version checks must account for `CORESCOPE_VERSION` and `.image-version`, which override the baked version.
 
-Keep the previous tested artifact for rollback. Rollback changes application files, not measurement history. Upgrade one instance at a time and check ingestion, API behavior and client reconnection before continuing.
+Keep the previous tested artifact for rollback. For rollback from the v3.16-or-newer account schema, restore the matching pre-upgrade account database as well as application files. Test the analyzer rollback on a copy; do not assume compatibility from additive tables alone. Upgrade one instance at a time and check ingestion, API behavior and client reconnection before continuing.
 
 ## Single-broker setup
 

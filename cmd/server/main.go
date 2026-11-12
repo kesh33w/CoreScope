@@ -111,6 +111,7 @@ func main() {
 	if err != nil {
 		log.Printf("[config] warning: %v (using defaults)", err)
 	}
+	warnClientRxAppURL(cfg)
 
 	// CLI flags override config
 	if port > 0 {

@@ -1,5 +1,7 @@
 # CoreScope
 
+This is the SacMesh fork of [upstream CoreScope](https://github.com/Kpa-clawbot/CoreScope), based on v3.17.0. The fork release is `v3.17.0+sacmesh.1`. See [fork maintenance](docs/fork-maintenance.md) for the retained changes and upgrade checks. Badges below report upstream CI, not this fork's validation.
+
 [![Go Server Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/go-server-coverage.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
 [![Go Ingestor Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/go-ingestor-coverage.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
 [![E2E Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/e2e-tests.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
@@ -12,7 +14,7 @@ Self-hosted, open-source MeshCore packet analyzer. Collects MeshCore packets via
 
 ## ⚡ Performance
 
-The Go backend serves its packet and analytics API from an in-memory packet store with 7 indexes (hash, txID, obsID, observer, node, path hop, payload type). SQLite is for persistence only — reads never touch disk.
+The Go backend serves its packet and analytics API from an in-memory packet store with 7 indexes (hash, txID, obsID, observer, node, path hop, payload type). Recent queries use that cache; this fork also reads SQLite for historical intervals no longer fully cached.
 
 | Metric | Value |
 |--------|-------|
