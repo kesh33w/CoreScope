@@ -163,19 +163,26 @@ async function run() {
     assert(valB === idB, 'compareObsB should be pre-selected to b=, got ' + valB);
   });
 
-  await step('Comparison excludes TX-only evidence but keeps shared receptions (#667)', async () => {
+  await step('Comparison uses bounded per-observer reception evidence (#667)', async () => {
     const comparisonPage = await ctx.newPage();
     const requests = [];
-    // Both API rows may display a different observer's representative direction.
-    const txOnlyA = { hash: 'a-tx-b-rx', direction: 'rx', observer_id: idB, payload_type: 4, route_type: 1 };
-    const sharedRx = { hash: 'shared-rx', direction: 'tx', observer_id: idB, payload_type: 4, route_type: 1 };
-    await comparisonPage.route('**/api/packets?**', async route => {
+    // The reception endpoint excludes TX in SQL. Its server regression is
+    // TestComparisonExcludesTXAndCapsObserver. Unlike /api/packets, this endpoint
+    // returns one row per reception with its actual observer, not a grouped
+    // packet's representative observer/direction.
+    await comparisonPage.route('**/api/observer-comparison?**', async route => {
       const query = new URL(route.request().url()).searchParams;
-      if (![idA, idB].includes(query.get('observer'))) return route.continue();
       requests.push(query);
-      const packets = query.get('observer') === idA && query.get('excludeTx') === 'true'
-        ? [sharedRx] : [txOnlyA, sharedRx];
-      await route.fulfill({ json: { packets, total: packets.length, limit: 10000, offset: 0 } });
+      const common = { timestamp: Date.now() / 1000, raw_hex: '', path_json: '[]', snr: 1, payload_type: 4, route_type: -1 };
+      const packets = [
+        { ...common, id: 1, hash: 'shared-rx', observer_id: idA },
+        { ...common, id: 2, hash: 'a-tx-b-rx', observer_id: idB },
+        { ...common, id: 3, hash: 'shared-rx', observer_id: idB }
+      ];
+      await route.fulfill({ json: {
+        packets, since: query.get('since'), until: query.get('until'),
+        scanned: 4, scan_cap: 50000, observer_cap: 10000, truncated: false
+      } });
     });
     try {
       await comparisonPage.goto(BASE + '/#/compare?a=' + encodeURIComponent(idA) + '&b=' + encodeURIComponent(idB), { waitUntil: 'domcontentloaded' });
@@ -184,7 +191,12 @@ async function run() {
       assert(/saw 1 unique packets and .* saw 2 unique packets/.test(summary), 'expected reception totals 1 and 2, got: ' + summary);
       assert(/1 \(50\.0%\) were seen by both observers/.test(summary), 'TX-only evidence must not count as a shared reception: ' + summary);
       assert(!/Perfect overlap/.test(summary), 'TX-only evidence must not produce perfect overlap');
-      assert(requests.length === 2 && requests.every(q => q.get('excludeTx') === 'true'), 'comparison must use exactly two receive-only bulk requests');
+      assert(requests.length === 1, 'comparison must use one bounded reception request');
+      const query = requests[0];
+      assert(query.get('a') === idA && query.get('b') === idB, 'request must identify both selected observers');
+      const duration = Date.parse(query.get('until')) - Date.parse(query.get('since'));
+      assert(Number.isFinite(duration) && duration > 0 && duration <= 86400000, 'request must specify a bounded reception window');
+      assert(await comparisonPage.locator('.compare-receptions').innerText().then(text => text.includes('Full stored reception sample')), 'complete sample must display its completeness status');
     } finally {
       await comparisonPage.close();
     }
