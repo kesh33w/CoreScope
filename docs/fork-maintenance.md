@@ -38,3 +38,9 @@ Keep the previous tested artifact for rollback. For rollback from the v3.16-or-n
 Use exactly one MQTT source for a broker-only instance. Subscribe to that broker's `meshcore/+/+/packets` and `meshcore/+/+/status` topics. Leave `iataFilter` and `observerIATAWhitelist` empty only when every region from that broker is wanted. Broker selection controls source isolation; geographic filtering does not.
 
 Keep separate container names, ports, configuration, data directories and databases for each instance. Never point a new instance at another instance's writable database. The `regions` object supplies display labels, not an ingestion allowlist. Keep credentials, channel secrets, runtime configuration and databases outside Git and the image build context.
+
+## Map tile provider follow-up
+
+The fork includes upstream change `a0b4e6cf` (after the v3.17.0 release) for consistent light/dark tile selection, late configuration and node-map refresh. Map and Live also refresh the existing layer's maximum zoom and attribution when switching providers, including label overlays. Re-registering the layer lets Leaflet recalculate its zoom limits; it does not add packet-processing work.
+
+Explicit operator tile URL overrides now take precedence consistently on these maps. Without an override, the existing customizer provider selection and server defaults apply. No configuration keys or defaults are added by this follow-up. Test fresh loads, provider/theme changes and zoom limits before deploying to an instance with custom tile URLs. This source change alone does not update running instances.

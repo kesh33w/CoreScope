@@ -666,41 +666,26 @@
     // If navigated with ?node=PUBKEY, highlight that node after markers load
     targetNodeKey = urlParams.get('node') || null;
 
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
-      (document.documentElement.getAttribute('data-theme') !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    // #1420 — multi-provider dark-tile picker. Light mode unchanged.
+    const isDark = window.MC_isDarkTheme();
+    // #1420 — multi-provider dark-tile picker. Light mode unchanged (map page).
     let _darkRefLayer = null;  // Esri-only: labels overlay
+    // Single shared registry resolver (map-tile-providers.js loads before this
+    // file; there is deliberately no second fallback body here — AGENTS.md DRY).
     function _resolveTileUrl(dark) {
-      const reg = window.MC_TILE_PROVIDERS || {};
-      if (!dark) {
-        const lightId = (typeof window.MC_getLightTileProvider === 'function') ? window.MC_getLightTileProvider() : null;
-        const lp = lightId ? (reg[lightId] || null) : null;
-        if (lp && lp.url) {
-          return { url: (typeof lp.url === 'function' ? lp.url() : lp.url), attribution: lp.attribution || '© OpenStreetMap © CartoDB', refUrl: null };
-        }
-        return { url: TILE_LIGHT, attribution: '© OpenStreetMap © CartoDB', refUrl: null };
-      }
-      const id  = (typeof window.MC_getDarkTileProvider === 'function') ? window.MC_getDarkTileProvider() : 'carto-dark';
-      const p   = reg[id] || reg['carto-dark'] || {};
-      return {
-        url: (typeof p.url === 'function' ? p.url() : p.url) || (typeof p.baseUrl === 'function' ? p.baseUrl() : p.baseUrl) || TILE_DARK,
-        attribution: p.attribution || '© OpenStreetMap © CartoDB',
-        refUrl: p.refUrl || null
-      };
+      const r = window.MC_resolveTile(!!dark);
+      return { url: r.url, attribution: r.attribution, refUrl: r.refUrl, maxZoom: r.maxZoom };
     }
     const autoLayerGroup = L.layerGroup().addTo(map);
     
     function _syncDarkTiles(dark) {
       const r = _resolveTileUrl(dark);
-      tileLayer.setUrl(r.url);
-      if (tileLayer.options) tileLayer.options.attribution = r.attribution;
+      window.MC_updateTileLayer(tileLayer, autoLayerGroup, r);
       // Esri reference (labels) overlay: add when needed, remove otherwise.
       if (dark && r.refUrl) {
         if (!_darkRefLayer) {
-          _darkRefLayer = L.tileLayer(r.refUrl, { maxZoom: 19, attribution: r.attribution }).addTo(autoLayerGroup);
+          _darkRefLayer = L.tileLayer(r.refUrl, { maxZoom: r.maxZoom || 19, attribution: r.attribution }).addTo(autoLayerGroup);
         } else {
-          _darkRefLayer.setUrl(r.refUrl);
-          if (!autoLayerGroup.hasLayer(_darkRefLayer)) _darkRefLayer.addTo(autoLayerGroup);
+          window.MC_updateTileLayer(_darkRefLayer, autoLayerGroup, { url: r.refUrl, maxZoom: r.maxZoom, attribution: r.attribution });
         }
       } else if (_darkRefLayer) {
         autoLayerGroup.removeLayer(_darkRefLayer);
@@ -715,10 +700,10 @@
     const _initTile = _resolveTileUrl(isDark);
     const tileLayer = L.tileLayer(_initTile.url, {
       attribution: _initTile.attribution,
-      maxZoom: 19,
+      maxZoom: _initTile.maxZoom || 19,
     }).addTo(autoLayerGroup);
     if (isDark && _initTile.refUrl) {
-      _darkRefLayer = L.tileLayer(_initTile.refUrl, { maxZoom: 19, attribution: _initTile.attribution }).addTo(autoLayerGroup);
+      _darkRefLayer = L.tileLayer(_initTile.refUrl, { maxZoom: _initTile.maxZoom || 19, attribution: _initTile.attribution }).addTo(autoLayerGroup);
     }
     if (typeof window.MC_applyTileFilter === 'function') window.MC_applyTileFilter();
     
@@ -728,15 +713,13 @@
     }
 
     const _mapThemeObs = new MutationObserver(function () {
-      const dark = document.documentElement.getAttribute('data-theme') === 'dark' ||
-        (document.documentElement.getAttribute('data-theme') !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      const dark = window.MC_isDarkTheme();
       _syncDarkTiles(dark);
     });
     _mapThemeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     // #1420 — re-render when the user picks a different dark provider in the customizer.
     window.addEventListener('mc-tile-provider-changed', function (e) {
-      const dark = document.documentElement.getAttribute('data-theme') === 'dark' ||
-        (document.documentElement.getAttribute('data-theme') !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      const dark = window.MC_isDarkTheme();
       if (e && e.detail && e.detail.type && e.detail.type !== (dark ? 'dark' : 'light')) return;
       _syncDarkTiles(dark);
     });
