@@ -1326,7 +1326,7 @@ func TestDecodeGrpTxtWithDecryption(t *testing.T) {
 	ctBytes, _ := hex.DecodeString(ctHex)
 
 	// Build GRP_TXT payload: channelHash(1) + MAC(2) + encrypted
-	buf := []byte{0xAA}
+	buf := []byte{testChannelKeyHash(key)}
 	buf = append(buf, macBytes...)
 	buf = append(buf, ctBytes...)
 
@@ -1348,11 +1348,11 @@ func TestDecodeGrpTxtWithDecryption(t *testing.T) {
 	if p.Text != "Bob: Testing 123" {
 		t.Errorf("text=%q, want 'Bob: Testing 123'", p.Text)
 	}
-	if p.ChannelHash != 0xAA {
-		t.Errorf("channelHash=%d, want 0xAA", p.ChannelHash)
+	if p.ChannelHash != int(testChannelKeyHash(key)) {
+		t.Errorf("channelHash=%d, want %d", p.ChannelHash, testChannelKeyHash(key))
 	}
-	if p.ChannelHashHex != "AA" {
-		t.Errorf("channelHashHex=%s, want AA", p.ChannelHashHex)
+	if p.ChannelHashHex != strings.ToUpper(hex.EncodeToString([]byte{testChannelKeyHash(key)})) {
+		t.Errorf("channelHashHex=%s, want matching key hash", p.ChannelHashHex)
 	}
 	if p.SenderTimestamp != 1700000000 {
 		t.Errorf("senderTimestamp=%d, want 1700000000", p.SenderTimestamp)
@@ -1424,7 +1424,7 @@ func TestDecodeGrpTxtMultipleKeysTriesAll(t *testing.T) {
 	macBytes, _ := hex.DecodeString(macHex)
 	ctBytes, _ := hex.DecodeString(ctHex)
 
-	buf := []byte{0x01}
+	buf := []byte{testChannelKeyHash(correctKey)}
 	buf = append(buf, macBytes...)
 	buf = append(buf, ctBytes...)
 
@@ -1503,7 +1503,7 @@ func TestDecodeGrpTxtGarbageMarkedFailed(t *testing.T) {
 	macBytes, _ := hex.DecodeString(macHex)
 	ctBytes, _ := hex.DecodeString(ctHex)
 	buf := make([]byte, 1+2+len(ctBytes))
-	buf[0] = 0xFF // channel hash
+	buf[0] = testChannelKeyHash(key) // channel hash
 	buf[1] = macBytes[0]
 	buf[2] = macBytes[1]
 	copy(buf[3:], ctBytes)

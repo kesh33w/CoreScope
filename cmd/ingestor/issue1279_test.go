@@ -76,7 +76,7 @@ func TestDecodeGrpDataDecryptedInner(t *testing.T) {
 	inner = append(inner, blob...)
 	ctHex, macHex := buildChannelEncrypted(key, inner)
 
-	buf := []byte{0xAB}
+	buf := []byte{testChannelKeyHash(key)}
 	mb, _ := hex.DecodeString(macHex)
 	buf = append(buf, mb...)
 	cb, _ := hex.DecodeString(ctHex)

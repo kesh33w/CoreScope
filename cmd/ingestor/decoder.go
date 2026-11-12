@@ -558,6 +558,22 @@ func normalizeChannelName(name string) string {
 	return name
 }
 
+// channelKeyMatchesHash cheaply excludes unrelated keys before HMAC/AES work.
+// MeshCore carries SHA256(channel AES key)[0] in the group envelope. This is
+// only a routing hint: collisions still require the normal MAC and plaintext
+// validation. Stack storage avoids allocations proportional to catalogue size.
+func channelKeyMatchesHash(keyHex string, want byte) bool {
+	if len(keyHex) != 32 {
+		return false
+	}
+	var key [16]byte
+	if _, err := hex.Decode(key[:], []byte(keyHex)); err != nil {
+		return false
+	}
+	hash := sha256.Sum256(key[:])
+	return hash[0] == want
+}
+
 func decodeGrpTxt(buf []byte, channelKeys map[string]string) Payload {
 	if len(buf) < 3 {
 		return Payload{Type: "GRP_TXT", Error: "too short", RawHex: hex.EncodeToString(buf)}
@@ -572,6 +588,9 @@ func decodeGrpTxt(buf []byte, channelKeys map[string]string) Payload {
 	// Match Node.js: only attempt decryption if encrypted data >= 5 bytes (10 hex chars)
 	if hasKeys && len(encryptedData) >= 10 {
 		for name, key := range channelKeys {
+			if !channelKeyMatchesHash(key, buf[0]) {
+				continue
+			}
 			result, err := decryptChannelMessage(encryptedData, mac, key)
 			if err != nil {
 				continue
@@ -628,6 +647,9 @@ func decodeGrpData(buf []byte, channelKeys map[string]string) Payload {
 	hasKeys := len(channelKeys) > 0
 	if hasKeys && len(encryptedData) >= 10 {
 		for name, key := range channelKeys {
+			if !channelKeyMatchesHash(key, buf[0]) {
+				continue
+			}
 			plain, err := decryptChannelBlock(encryptedData, mac, key)
 			if err != nil {
 				continue
