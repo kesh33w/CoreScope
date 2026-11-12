@@ -1595,7 +1595,7 @@ func (db *DB) GetNonRelayObserverPubkeys() ([]string, error) {
 	for rows.Next() {
 		var pk string
 		if err := rows.Scan(&pk); err == nil && pk != "" {
-			out = append(out, pk)
+			out = append(out, strings.ToLower(observerPublicKey(pk)))
 		}
 	}
 	return out, rows.Err()
@@ -1621,7 +1621,7 @@ func (db *DB) GetCanRelaySeenObserverPubkeys() ([]string, error) {
 	for rows.Next() {
 		var pk string
 		if err := rows.Scan(&pk); err == nil && pk != "" {
-			out = append(out, pk)
+			out = append(out, strings.ToLower(observerPublicKey(pk)))
 		}
 	}
 	return out, rows.Err()

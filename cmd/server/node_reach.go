@@ -854,7 +854,7 @@ func (s *Server) readReachRows(ctx context.Context, q string, args []interface{}
 			skipped++
 			continue
 		}
-		pr := pathRow{observerPK: oid, fromPubkey: fpk, payloadType: pt, path: path}
+		pr := pathRow{observerPK: observerPublicKey(oid), fromPubkey: fpk, payloadType: pt, path: path}
 		if snr.Valid {
 			pr.snr = snr.Float64
 			pr.snrValid = true

@@ -40,6 +40,13 @@ type paramMeta struct {
 // Key format: "METHOD /path/pattern"
 func routeDescriptions() map[string]routeMeta {
 	return map[string]routeMeta{
+		// Bounded observation reads used by the Compare page.
+		"GET /api/observer-comparison": {Summary: "Compare stored receptions", Description: "Read-only v3 observation sample. Half-open UTC time window, at most 24h; newest 50000 site observation candidates and 10000 receptions per observer. A truncated response is not a complete comparison. Reception raw_hex is empty when not retained; no canonical frame fallback. Excludes TX reports. No experiment notes are sent to this API.", Tag: "observers", QueryParams: []paramMeta{
+			{Name: "a", Type: "string", Required: true, Description: "First observer ID"},
+			{Name: "b", Type: "string", Required: true, Description: "Different reference observer ID"},
+			{Name: "since", Type: "string", Required: true, Description: "Inclusive RFC3339 start"},
+			{Name: "until", Type: "string", Required: true, Description: "Exclusive RFC3339 end"},
+		}},
 		// Config
 		"GET /api/config/cache":              {Summary: "Get cache configuration", Tag: "config"},
 		"GET /api/config/client":             {Summary: "Get client configuration", Tag: "config"},
@@ -140,7 +147,7 @@ func routeDescriptions() map[string]routeMeta {
 				{Name: "radio", Description: "Only packets some observer heard on this radio setting, \"MHz,kHz,SF,CR\" (e.g. 869.618,62.5,8,8). Resolved from each observer's radio history at the time of the observation (#1869); every observation and packet (grouped rows: their header observation) carries the resolved value as radio. Combined with observer, only those observers' observations count. Served from the in-memory window only: a since/until before it does not fall back to SQL for a radio query.", Type: "string"},
 				{Name: "hash", Description: "Exact transmission hash, with input lowercased before matching. This is not a prefix search.", Type: "string"},
 				{Name: "since", Description: "Lower time bound; RFC3339 recommended. In-memory lists require first_seen > since; SQL uses observations >= since for RFC3339 values, otherwise first_seen > since. Multi-node mode uses first_seen >= since. Omit for no lower bound.", Type: "string"},
-				{Name: "until", Description: "Upper time bound; RFC3339 recommended. In-memory lists require first_seen < until; SQL uses observations <= until for RFC3339 values, otherwise first_seen < until. Multi-node mode uses first_seen <= until. Omit for no upper bound.", Type: "string"},
+				{Name: "until", Description: "Upper time bound; RFC3339 recommended. In-memory lists require first_seen < until; SQL uses observations <= until for RFC3339 values, otherwise first_seen < until. Multi-node mode uses first_seen <= until. An end-only range uses historical SQL when available, unless a radio filter requires the in-memory path. Omit for no upper bound.", Type: "string"},
 				{Name: "region", Description: "Filter by the receiving observer's IATA region code.", Type: "string"},
 				{Name: "node", Description: "Filter by node public key or exact name. SQL fallback matches the originating node; cached results can also include indexed relay involvement.", Type: "string"},
 				{Name: "nodes", Description: "Comma-separated node public keys or exact names, up to 50 non-empty entries after trimming whitespace. Selects multi-node mode: only limit, offset, order, since and until also apply; other packet filters and modes are ignored. More than 50 entries returns 400.", Type: "string"},

@@ -113,7 +113,7 @@ client and server cannot drift. Each entry has a kind:
 | Map: `meshcore-map-clustering`, `meshcore-map-heatmap`, `meshcore-map-hash-labels`, `meshcore-map-multibyte-overlay`, `meshcore-map-scope-overlay`, `meshcore-map-status-filter`, `meshcore-map-scope-filter`, `meshcore-map-byte-filter`, `meshcore-map-region-filter`, `meshcore-map-geo-filter`, `meshcore-top-routes-axis`, `meshcore-top-routes-n` | scalar |
 | Analytics: `subpath-hide-collisions`, `meshcore-repeater-scatter-x`, `meshcore-repeater-scatter-y`, `ng-min-score` | scalar |
 | Home: `meshcore-user-level` | scalar |
-| Live: `meshcore-live-heatmap`, `live-ghost-hops`, `live-realistic-propagation`, `live-favorites-only`, `live-multibyte-only`, `live-matrix-mode`, `live-matrix-rain`, `meshcore-color-packets-by-hash`, `live-node-filter`, `live-vcr-speed`, `live-audio-voice`, `live-audio-enabled`, `live-audio-bpm`, `live-audio-volume` | scalar |
+| Live: `meshcore-live-heatmap`, `live-realistic-propagation`, `live-favorites-only`, `live-multibyte-only`, `live-matrix-mode`, `live-matrix-rain`, `meshcore-color-packets-by-hash`, `live-node-filter`, `live-vcr-speed`, `live-audio-voice`, `live-audio-enabled`, `live-audio-bpm`, `live-audio-volume` | scalar |
 
 The implementation plan re-checks this list against `public/` (keys built from
 constants are easy to miss) and pins it with a test that fails when a listed key no
@@ -310,7 +310,7 @@ rules override the sections above where they differ.
    in `users.db`.
 8. **`live-channel-colors` is not synced** (final review): it is keyed by channel name,
    which for hashtag and PSK channels is (part of) the channel key. It moved from the
-   allowlist to the hard denylist; the allowlist has 61 keys.
+   allowlist to the hard denylist; the allowlist has 60 keys.
 9. **Each document has a generation** (final review): revisions restart at 1 after
    "Delete synced settings", so a revision alone cannot tell the new document from the
    old one. The first write creates a random generation; GET, PUT and 409 carry it; a

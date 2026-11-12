@@ -1169,7 +1169,9 @@ func (c *Config) IsObserverBlacklisted(id string) bool {
 	if c == nil || len(c.ObserverBlacklist) == 0 {
 		return false
 	}
-	return c.obsBlacklistSet()[strings.ToLower(strings.TrimSpace(id))]
+	set := c.obsBlacklistSet()
+	id = strings.TrimSpace(id)
+	return set[strings.ToLower(id)] || set[strings.ToLower(observerPublicKey(id))]
 }
 
 // AnalyticsConfig controls steady-state background recompute of

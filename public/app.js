@@ -869,6 +869,42 @@ function checkWSLiveness() {
   connectWS();
 }
 
+// Private connection monitoring receives only this fixed page vocabulary.
+// Never send the hash, query, search text, or selected node/packet identifier.
+function telemetryPageId(hash) {
+  const route = String(hash || '').replace(/^#\/?/, '').split('?')[0];
+  const parts = route.split('/');
+  const page = parts[0] || 'packets';
+  if (page === 'nodes' && parts.length > 2 && parts[2] === 'analytics') return 'node-analytics';
+  if (page === 'nodes' && parts.length > 2 && parts[2] === 'reach') return 'node-reach';
+  if (page === 'packet' && parts[1]) return 'packet-detail';
+  if (page === 'observers' && parts[1]) return 'observer-detail';
+  if (page === 'tools') {
+    if (parts[1] === 'trace') return 'traces';
+    if (parts[1] === 'path-inspector') return 'path-inspector';
+    return 'tools';
+  }
+  if (page === 'roles') return 'analytics';
+  switch (page) {
+    case 'home': case 'packets': case 'nodes': case 'map': case 'live':
+    case 'channels': case 'observers': case 'analytics': case 'traces':
+    case 'audio-lab': case 'perf': case 'compare': case 'rx-coverage':
+    case 'scope-audit': case 'account': case 'admin':
+      return page;
+    default: return 'unknown';
+  }
+}
+
+function reportCurrentPage(sock) {
+  if (!sock || sock.readyState !== 1) return;
+  const page = telemetryPageId(location.hash);
+  if (sock._reportedPage === page) return;
+  try {
+    sock.send(JSON.stringify({ type: 'page_view', page }));
+    sock._reportedPage = page;
+  } catch (_) { /* Navigation must work even if the socket is closing. */ }
+}
+
 function connectWS() {
   clearTimeout(wsReconnectTimer);
   wsReconnectTimer = null;
@@ -879,7 +915,10 @@ function connectWS() {
   // Measured from creation, so a handshake that never completes is caught too.
   wsLastMessageAt = Date.now();
   wsWatchdogTimer = setTimeout(checkWSLiveness, WS_STALE_MS);
-  sock.onopen = () => Logo.setConnected(true);
+  sock.onopen = () => {
+    Logo.setConnected(true);
+    reportCurrentPage(sock);
+  };
   sock.onclose = () => {
     clearTimeout(wsWatchdogTimer);
     wsWatchdogTimer = null;
@@ -1309,6 +1348,7 @@ function navigate() {
     pages[currentPage].destroy();
   }
   currentPage = basePage;
+  reportCurrentPage(ws);
   setRouteTitle(basePage, routeParam);
 
   // #1572 — defensive: ensure body.live-fullscreen is cleared whenever

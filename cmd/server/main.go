@@ -86,11 +86,14 @@ func main() {
 	}
 
 	var (
-		configDir string
-		port      int
-		dbPath    string
-		publicDir string
-		pollMs    int
+		configDir        string
+		port             int
+		dbPath           string
+		publicDir        string
+		pollMs           int
+		telemetryTrusted string
+		telemetrySocket  string
+		telemetrySource  string
 	)
 
 	flag.StringVar(&configDir, "config-dir", ".", "Directory containing config.json")
@@ -98,6 +101,9 @@ func main() {
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (overrides config/env)")
 	flag.StringVar(&publicDir, "public", "public", "Directory to serve static files from")
 	flag.IntVar(&pollMs, "poll-ms", 1000, "SQLite poll interval for WebSocket broadcast (ms)")
+	flag.StringVar(&telemetrySocket, "telemetry-socket", "", "Private opt-in Unix socket path (disabled by default)")
+	flag.StringVar(&telemetrySource, "telemetry-source", "corescope", "Private telemetry service label")
+	flag.StringVar(&telemetryTrusted, "telemetry-trusted-proxies", "", "Telemetry-only trusted XFF proxies (verified sanitizing chain required)")
 	flag.Parse()
 
 	// Load config
@@ -358,6 +364,22 @@ func main() {
 
 	// WebSocket hub
 	hub := NewHub()
+	if telemetrySocket != "" {
+		if !telemetryLabel.MatchString(telemetrySource) {
+			log.Fatal("invalid telemetry source label")
+		}
+		trusted, err := parseTelemetryTrust(telemetryTrusted)
+		if err != nil {
+			log.Fatal(err)
+		}
+		hub.telemetry = newConnectionTelemetry(telemetrySource, 512, 1024)
+		hub.telemetry.trusted = trusted
+		telemetryServer, err := startTelemetry(telemetrySocket, hub.telemetry)
+		if err != nil {
+			log.Fatalf("private telemetry: %v", err)
+		}
+		defer telemetryServer.Close()
+	}
 	hub.SetAllowedOrigins(cfg.CORSAllowedOrigins)
 	hub.ConfigureLimits(cfg.WSMaxConnsPerIP(), cfg.WSUpgradesPerMinPerIP(),
 		cfg.WSTrustedProxies(), cfg.WSDeny()) // #1794

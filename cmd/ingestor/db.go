@@ -144,12 +144,22 @@ func OpenStore(dbPath string) (*Store, error) {
 
 // OpenStoreWithInterval opens or creates a SQLite DB with a configurable sample interval.
 func OpenStoreWithInterval(dbPath string, sampleIntervalSec int) (*Store, error) {
+	return OpenStoreWithIntervalAndSynchronous(dbPath, sampleIntervalSec, "")
+}
+
+// OpenStoreWithIntervalAndSynchronous opens the ingestor writer with an
+// explicit durability mode. Empty means FULL, preserving existing callers.
+func OpenStoreWithIntervalAndSynchronous(dbPath string, sampleIntervalSec int, synchronous string) (*Store, error) {
+	dsn, err := dbschema.WriterDSNWithSynchronous(dbPath, synchronous)
+	if err != nil {
+		return nil, err
+	}
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating data dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbschema.WriterDSN(dbPath))
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
@@ -160,7 +170,10 @@ func OpenStoreWithInterval(dbPath string, sampleIntervalSec int) (*Store, error)
 
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	log.Printf("SQLite config: busy_timeout=5000ms, max_open_conns=1, max_idle_conns=1, journal=WAL, synchronous=FULL")
+	if synchronous == "" {
+		synchronous = "FULL"
+	}
+	log.Printf("SQLite config: busy_timeout=5000ms, max_open_conns=1, max_idle_conns=1, journal=WAL, synchronous=%s", synchronous)
 
 	if err := applySchema(db); err != nil {
 		return nil, fmt.Errorf("applying schema: %w", err)
@@ -1106,13 +1119,22 @@ func (s *Store) prepareStatements() error {
 // InsertTransmission inserts a decoded packet into transmissions + observations.
 // Returns true if a new transmission was created (not a duplicate hash).
 func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
+	return s.insertTransmission(data, false)
+}
+
+// InsertObservedTransmission also records the raw packet's observer update in
+// the packet transaction, avoiding a second durable commit for each message.
+func (s *Store) InsertObservedTransmission(data *PacketData) (bool, error) {
+	return s.insertTransmission(data, true)
+}
+
+func (s *Store) insertTransmission(data *PacketData, updateObserver bool) (bool, error) {
 	hash := data.Hash
 	if hash == "" {
 		return false, nil
 	}
 
-	// Wait/hold instrumentation (#1340). The hot path uses prepared
-	// statements that auto-commit; gate the whole function under
+	// Wait/hold instrumentation (#1340). Gate the whole function under
 	// writerMu so concurrent mqtt_handler inserts queue behind any
 	// other writer (vacuum, prune, neighbor-builder) and the wait is
 	// Go-visible.
@@ -1126,6 +1148,17 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 		recordWriterTiming("mqtt_handler", mqttWait, mqttHold, "InsertTransmission")
 	}()
 
+	// Keep the packet's related writes on one pinned connection. In WAL FULL
+	// mode, each former autocommit could require its own durable WAL sync.
+	// Binding prepared statements to this tx also prevents unrelated DB users
+	// from joining the packet transaction while async jobs are running.
+	tx, err := s.db.Begin()
+	if err != nil {
+		s.Stats.WriteErrors.Add(1)
+		return false, fmt.Errorf("begin packet transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	rxTime := data.Timestamp
 	ingestNow := time.Now().UTC().Format(time.RFC3339)
 	if rxTime == "" {
@@ -1138,17 +1171,17 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 	// Check for existing transmission
 	var existingID int64
 	var existingFirstSeen string
-	err := s.stmtGetTxByHash.QueryRow(hash).Scan(&existingID, &existingFirstSeen)
+	err = tx.Stmt(s.stmtGetTxByHash).QueryRow(hash).Scan(&existingID, &existingFirstSeen)
 	if err == nil {
 		// Existing transmission
 		txID = existingID
 		if rxTime < existingFirstSeen {
-			_, _ = s.stmtUpdateTxFirstSeen.Exec(rxTime, txID)
+			_, _ = tx.Stmt(s.stmtUpdateTxFirstSeen).Exec(rxTime, txID)
 		}
-	} else {
+	} else if err == sql.ErrNoRows {
 		// New transmission
 		isNew = true
-		result, err := s.stmtInsertTransmission.Exec(
+		result, err := tx.Stmt(s.stmtInsertTransmission).Exec(
 			data.RawHex, hash, rxTime,
 			data.RouteType, data.PayloadType, data.PayloadVersion,
 			data.DecodedJSON, nilIfEmpty(data.ChannelHash),
@@ -1163,11 +1196,9 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 			return false, fmt.Errorf("insert transmission: %w", err)
 		}
 		txID, _ = result.LastInsertId()
-		s.Stats.TransmissionsInserted.Add(1)
-	}
-
-	if !isNew {
-		s.Stats.DuplicateTransmissions.Add(1)
+	} else {
+		s.Stats.WriteErrors.Add(1)
+		return false, fmt.Errorf("find transmission: %w", err)
 	}
 	// Capture route evidence BEFORE the observation conflict update can erase
 	// a different route. Duplicate evidence is a read-only indexed probe.
@@ -1175,7 +1206,7 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 	// known evidence is a lower bound when an evidence read/write fails.
 	if data.PayloadType == 4 {
 		if bit := packetpath.AdvertRouteEvidence(data.RawHex); bit != 0 {
-			if _, err := s.stmtInsertAdvertEvidence.Exec(txID, bit, txID, bit); err != nil {
+			if _, err := tx.Stmt(s.stmtInsertAdvertEvidence).Exec(txID, bit, txID, bit); err != nil {
 				s.Stats.WriteErrors.Add(1)
 				log.Printf("[db] record advert route evidence (non-fatal): %v", err)
 			}
@@ -1186,14 +1217,14 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 	var observerIdx *int64
 	if data.ObserverID != "" {
 		var rowid int64
-		err := s.stmtGetObserverRowid.QueryRow(data.ObserverID).Scan(&rowid)
+		err := tx.Stmt(s.stmtGetObserverRowid).QueryRow(data.ObserverID).Scan(&rowid)
 		if err == nil {
 			observerIdx = &rowid
 			// observer.last_seen and last_packet_at answer "when did the analyzer
 			// last hear from this observer" — both are ingest-time questions.
 			// Per-packet rxTime is stored separately on observations/transmissions
 			// using envelope time (see InsertTransmission above). See #1465.
-			_, _ = s.stmtUpdateObserverLastSeen.Exec(ingestNow, ingestNow, ingestNow, ingestNow, rowid)
+			_, _ = tx.Stmt(s.stmtUpdateObserverLastSeen).Exec(ingestNow, ingestNow, ingestNow, ingestNow, rowid)
 		}
 	}
 
@@ -1202,7 +1233,7 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 	// Run even for malformed incoming raw: the surviving old frame is valid
 	// evidence independently of whether the new frame contributes a bit.
 	if !isNew && data.PayloadType == 4 && observerIdx != nil && data.RawHex != "" {
-		if err := s.preserveLegacyAdvertObservation(txID, *observerIdx, data.PathJSON); err != nil {
+		if err := s.preserveLegacyAdvertObservationTx(tx, txID, *observerIdx, data.PathJSON); err != nil {
 			s.Stats.WriteErrors.Add(1)
 			log.Printf("[db] preserve legacy advert evidence (non-fatal): %v", err)
 		}
@@ -1230,10 +1261,9 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 	)
 	resolvedJSON := marshalResolvedPath(resolved)
 
-	// RETURNING id: the upsert's DO UPDATE runs on every conflict, so the row
-	// id comes back for a new and for an existing observation alike (#1869).
+	// RETURNING id preserves radio attribution on both insert and upsert.
 	var obsID int64
-	err = s.stmtInsertObservation.QueryRow(
+	err = tx.Stmt(s.stmtInsertObservation).QueryRow(
 		txID, observerIdx, data.Direction,
 		data.SNR, data.RSSI, data.Score,
 		data.PathJSON, epochTs, nilIfEmpty(data.RawHex),
@@ -1241,27 +1271,63 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 	).Scan(&obsID)
 	if err != nil {
 		s.Stats.WriteErrors.Add(1)
-		log.Printf("[db] observation insert (non-fatal): %v", err)
-	} else {
-		s.Stats.ObservationsInserted.Add(1)
-		s.recordObservationRadio(obsID, data.RxRadioID)
-		// #1598: refresh last_seen from flood relay activity, not just ADVERTs.
-		// #2329: adjacency can resolve a path for display but cannot prove
-		// which colliding node transmitted. Use only unique prefixes for
-		// liveness, with the same prefix snapshot as the stored path.
-		if pathHopsTransmitted(data) {
-			s.touchRelayNodesLocked(resolvedPubkeys(resolvePath(hops, prefixIdx)), rxTime)
-		}
-		// #1690: bump transmissions.last_seen so cold-load can filter on
-		// effective recency. Conditional `last_seen < ?` so we never go
-		// backwards on out-of-order ingest.
-		if _, err := s.stmtBumpTxLastSeen.Exec(epochTs, txID, epochTs); err != nil {
-			log.Printf("[db] tx last_seen bump (non-fatal): %v", err)
+
+		return false, fmt.Errorf("insert observation: %w", err)
+	}
+	// Keep sparse radio attribution on the same pinned transaction. A separate
+	// DB Exec here would contend with our own writer and lose attribution.
+	if obsID != 0 && data.RxRadioID != "" {
+		if _, err := tx.Stmt(s.stmtInsertObservationRadio).Exec(obsID, data.RxRadioID); err != nil {
+			s.Stats.WriteErrors.Add(1)
+			log.Printf("[db] observation radio (non-fatal): %v", err)
 		}
 	}
+	// #1690: Conditional last_seen bump never goes backwards on replay.
+	if _, err := tx.Stmt(s.stmtBumpTxLastSeen).Exec(epochTs, txID, epochTs); err != nil {
+		log.Printf("[db] tx last_seen bump (non-fatal): %v", err)
+	}
+	if updateObserver && data.ObserverID != "" {
+		// Match UpsertObserverAt's nil-metadata packet call. This deliberately
+		// runs after the observation: a first packet retains its historical
+		// NULL observer_idx, then creates the observer for later packets.
+		region := strings.TrimSpace(strings.ToUpper(data.Region))
+		name := clampObserverField(data.ObserverName, maxObserverTextLen)
+		_, err := tx.Stmt(s.stmtUpsertObserver).Exec(
+			data.ObserverID, name, region, ingestNow, ingestNow,
+			nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			name, region, ingestNow, ingestNow,
+			nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		)
+		if err != nil {
+			s.Stats.WriteErrors.Add(1)
+			return false, fmt.Errorf("upsert packet observer: %w", err)
+		}
+		// As in UpsertObserverAt, a live packet reactivates an inactive row.
+		if _, err := tx.Exec(`UPDATE observers SET inactive = 0 WHERE id = ? AND inactive = 1`, data.ObserverID); err != nil {
+			s.Stats.WriteErrors.Add(1)
+			return false, fmt.Errorf("reactivate packet observer: %w", err)
 
-	// Each prepared-stmt Exec auto-commits. Count one WAL commit per
-	// successful InsertTransmission so the perf page sees commit pressure.
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		s.Stats.WriteErrors.Add(1)
+		return false, fmt.Errorf("commit packet transaction: %w", err)
+	}
+	if isNew {
+		s.Stats.TransmissionsInserted.Add(1)
+	} else {
+		s.Stats.DuplicateTransmissions.Add(1)
+	}
+	s.Stats.ObservationsInserted.Add(1)
+	if updateObserver && data.ObserverID != "" {
+		s.Stats.ObserverUpserts.Add(1)
+	}
+	// Relay debounce state is only changed after the core packet is durable.
+	if pathHopsTransmitted(data) {
+		s.touchRelayNodesLocked(resolvedPubkeys(resolvePath(hops, prefixIdx)), rxTime)
+	}
+
+	// One successful packet transaction can flush WAL pages once.
 	s.Stats.WALCommits.Add(1)
 
 	return isNew, nil

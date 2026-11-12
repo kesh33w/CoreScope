@@ -44,6 +44,7 @@ node tests/unit/test-channels-merge-1498-unit.js
 node tests/unit/test-clear-filters.js
 node tests/unit/test-color-picker-ux.js
 node tests/unit/test-compare-flood-filter.js
+node tests/unit/test-observer-experiments.js
 node tests/unit/test-compare-overlap.js
 node tests/unit/test-confidence-indicator.js
 node tests/unit/test-coverage-gate.js
@@ -172,6 +173,7 @@ node tests/unit/test-live-dt-cap-1524.js
 node tests/unit/test-live-legend-helper.js
 node tests/unit/test-live-multibyte-filter.js
 node tests/unit/test-live-region-filter.js
+node tests/unit/test-live-path-inference.js
 node tests/unit/test-live.js
 node tests/unit/test-map-clustering.js
 node tests/unit/test-map-estimated.js
@@ -190,6 +192,7 @@ node tests/unit/test-observer-iata-1188.js
 node tests/unit/test-observer-menu-interactions.js
 node tests/unit/test-observer-naive-clock-1478.js
 node tests/unit/test-observer-detail-ownership.js
+node tests/unit/test-observer-radio-node-link.js
 node tests/unit/test-observer-search-filter.js
 node tests/unit/test-observers-headings.js
 node tests/unit/test-packet-filter-time.js
@@ -230,6 +233,7 @@ node tests/unit/test-vendored-libs.js
 node tests/unit/test-observer-neighbors.js
 node tests/unit/test-warmup-banner.js
 node tests/unit/test-ws-stale-watchdog-1074.js
+node tests/unit/test-telemetry-page.js
 node tests/unit/test-xss-escape-sinks.js
 
 echo "All standalone frontend suites passed"

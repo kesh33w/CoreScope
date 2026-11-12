@@ -114,17 +114,18 @@ async function testReceptionRequests() {
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      innerHTML: '', value: '', addEventListener() {},
+      innerHTML: '', value: '', addEventListener() {}, replaceChildren() {},
       classList: { toggle() {} }, querySelectorAll() { return []; },
     });
     return elements.get(id);
   }
   let hooks;
   const requests = [];
-  // The top-level row represents the longest path, not necessarily the
-  // selected observer: the shared reception may even display B's TX.
-  const txOnlyA = { hash: 'a-tx-b-rx', direction: 'rx', observer_id: 'B', payload_type: 4, route_type: 1 };
-  const sharedRx = { hash: 'shared-rx', direction: 'tx', observer_id: 'B', payload_type: 4, route_type: 1 };
+  // The bounded comparison endpoint returns reception-specific rows and
+  // excludes TX reports server-side (covered by its Go integration tests).
+  const sharedA = { hash: 'shared-rx', observer_id: 'A', payload_type: 4, route_type: 1 };
+  const onlyB = { hash: 'a-tx-b-rx', observer_id: 'B', payload_type: 4, route_type: 1 };
+  const sharedB = { hash: 'shared-rx', observer_id: 'B', payload_type: 4, route_type: 1 };
   const context = makeSandbox();
   context.location.hash = '#/compare?a=A&b=B';
   context.document.getElementById = element;
@@ -134,18 +135,20 @@ async function testReceptionRequests() {
     if (path === '/observers') return { observers: [{ id: 'A' }, { id: 'B' }] };
     const query = new URLSearchParams(path.split('?')[1]);
     requests.push(query);
-    return { packets: query.get('observer') === 'A' && query.get('excludeTx') === 'true'
-      ? [sharedRx] : [txOnlyA, sharedRx] };
+    assert.ok(path.startsWith('/observer-comparison?'));
+    return { packets: [sharedA, onlyB, sharedB], since: query.get('since'), until: query.get('until'), observer_cap: 10000, scan_cap: 50000 };
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(REPO_ROOT + '/public/payload-labels.js', 'utf8'), context);
   vm.runInContext(compareSrc, context);
   hooks.init(element('app'));
   await new Promise(resolve => setImmediate(resolve));
-  test('comparison requests reception membership in exactly two bulk calls (#667)', () => {
-    assert.strictEqual(requests.length, 2);
-    assert.deepStrictEqual(requests.map(q => q.get('observer')).sort(), ['A', 'B']);
-    for (const query of requests) assert.strictEqual(query.get('excludeTx'), 'true');
+  test('comparison requests bounded reception membership in one bulk call (#667)', () => {
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0].get('a'), 'A');
+    assert.strictEqual(requests[0].get('b'), 'B');
+    assert.ok(requests[0].get('since'));
+    assert.ok(requests[0].get('until'));
     const summary = element('compareDetail').innerHTML.replace(/<[^>]*>/g, '');
     assert.match(summary, /A saw 1 unique packets and B saw 2 unique packets/);
     assert.match(summary, /1 \(50\.0%\) were seen by both observers/);

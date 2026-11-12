@@ -690,7 +690,7 @@ console.log('\n=== live.js: resolveHopPositions ===');
     assert.strictEqual(result[0].known, true, 'sender with coords should be marked as known');
   });
 
-  test('resolves known node from nodeData', () => {
+  test('resolves ordered inferred nodes with sender context', () => {
     // Add a node to nodeData
     nodeData['nodeA_pubkey'] = { public_key: 'nodeA_pubkey', name: 'NodeA', lat: 37.3, lon: -122.0 };
     nodeData['nodeB_pubkey'] = { public_key: 'nodeB_pubkey', name: 'NodeB', lat: 38.0, lon: -121.0 };
@@ -698,20 +698,16 @@ console.log('\n=== live.js: resolveHopPositions ===');
     const mockResolver = {
       init() {},
       ready() { return true; },
-      resolve(hops) {
-        const map = {};
-        for (const h of hops) {
-          if (h === 'nodeA') map[h] = { name: 'NodeA', pubkey: 'nodeA_pubkey' };
-          else if (h === 'nodeB') map[h] = { name: 'NodeB', pubkey: 'nodeB_pubkey' };
-          else map[h] = { name: null, pubkey: null };
-        }
-        return map;
+      inferPath(hops) {
+        return hops.map(h => h === 'nodeA'
+          ? { name: 'NodeA', pubkey: 'nodeA_pubkey', lat:37.3, lon:-122, located:true }
+          : { name: 'NodeB', pubkey: 'nodeB_pubkey', lat:38, lon:-121, located:true });
       },
     };
     ctx.HopResolver = mockResolver;
     ctx.window.HopResolver = mockResolver;
     // Need at least 2 known nodes for ghost mode to not filter down
-    const result = resolve(['nodeA', 'nodeB'], {});
+    const result = resolve(['nodeA', 'nodeB'], {lat:37.3,lon:-122});
     assert.ok(result.length >= 2, `expected >= 2 positions, got ${result.length}`);
     const foundA = result.find(r => r.key === 'nodeA_pubkey');
     assert.ok(foundA, 'should resolve nodeA to nodeA_pubkey');
@@ -722,35 +718,24 @@ console.log('\n=== live.js: resolveHopPositions ===');
     delete nodeData['nodeB_pubkey'];
   });
 
-  test('ghost hops get interpolated positions between known nodes', () => {
-    // Set up: two known nodes, one unknown hop between them
-    nodeData['n1'] = { public_key: 'n1', name: 'N1', lat: 37.0, lon: -122.0 };
-    nodeData['n2'] = { public_key: 'n2', name: 'N2', lat: 38.0, lon: -121.0 };
-    const mockResolver = {
-      init() {},
-      ready() { return true; },
-      resolve(hops) {
-        const map = {};
-        for (const h of hops) {
-          if (h === 'h1') map[h] = { name: 'N1', pubkey: 'n1' };
-          else if (h === 'h3') map[h] = { name: 'N2', pubkey: 'n2' };
-          else map[h] = { name: null, pubkey: null };
-        }
-        return map;
-      },
+  test('unknown hops keep empty positions between inferred nodes', () => {
+    ctx.window.HopResolver = ctx.HopResolver = {
+      ready: () => true,
+      inferPath: () => [
+        { pubkey:'n1', name:'N1', lat:37, lon:-122, located:true },
+        { unlisted:true, located:false },
+        { pubkey:'n2', name:'N2', lat:38, lon:-121, located:true },
+      ],
     };
-    ctx.HopResolver = mockResolver;
-    ctx.window.HopResolver = mockResolver;
-    const result = resolve(['h1', 'h2', 'h3'], {});
-    assert.ok(result.length >= 2, `should have at least 2 positions, got ${result.length}`);
-    // Check that the ghost hop got an interpolated position
-    const ghost = result.find(r => r.ghost);
-    assert.ok(ghost, 'ghost hop should be present in resolved positions — if missing, interpolation logic changed');
-    assert.ok(ghost.pos[0] > 37.0 && ghost.pos[0] < 38.0, 'ghost lat should be interpolated');
-    assert.ok(ghost.pos[1] > -122.0 && ghost.pos[1] < -121.0, 'ghost lon should be interpolated');
-    delete nodeData['n1'];
-    delete nodeData['n2'];
+    const result = resolve(['h1','h2','h3'], {lat:37,lon:-122});
+    assert.strictEqual(result.length, 3);
+    assert.strictEqual(result[1].pos, null);
+    assert.ok(!result[1].ghost);
+    const segments = ctx.window._liveSplitLocatedHopPositions(result);
+    assert.strictEqual(segments.length, 2);
+    assert.ok(segments.every(s => s.length === 1));
   });
+
 }
 
 // ===== bufferPacket and VCR buffer management =====
@@ -938,13 +923,13 @@ console.log('\n=== live.js: source-level safety checks ===');
       'favorites filter toggle should persist to localStorage');
   });
 
-  test('ghost hops saves toggle to localStorage', () => {
-    assert.ok(src.includes("localStorage.setItem('live-ghost-hops'"),
-      'ghost hops toggle should persist to localStorage');
+  test('unknown-hop interpolation cannot be reenabled', () => {
+    assert.ok(!src.includes('liveGhostToggle'));
+    assert.ok(src.includes('Unknown hops leave gaps'));
   });
 
   test('clearNodeMarkers resets HopResolver', () => {
-    assert.ok(src.includes('if (window.HopResolver) HopResolver.init([])'),
+    assert.ok(src.includes('if (window.HopResolver) initLiveHopResolver([])'),
       'clearNodeMarkers should reset HopResolver');
   });
 

@@ -333,7 +333,7 @@ func BuildFromStoreWithOptions(store *PacketStore, opts BuildOptions) *NeighborG
 				continue
 			}
 			path := parsePathJSON(obs.PathJSON)
-			observerPK := cachedToLower(lowerCache, obs.ObserverID)
+			observerPK := cachedToLower(lowerCache, observerPublicKey(obs.ObserverID))
 
 			if len(path) == 0 {
 				// Zero-hop

@@ -61,7 +61,36 @@ func (db *DB) GetNodeBatteryHistory(pubkey, since string) ([]NodeBatterySample, 
 	if pubkey == "" {
 		return nil, nil
 	}
-	rows, err := db.conn.Query(nodeBatteryHistorySQL, strings.ToLower(pubkey), strings.ToUpper(pubkey), since)
+	// Observer IDs remain the metric index keys. Resolve explicit radio feeds
+	// through the observers primary-key index, then query their exact IDs rather
+	// than scanning or lowercasing the metrics table.
+	lower, upper := strings.ToLower(pubkey), strings.ToUpper(pubkey)
+	ids := []interface{}{lower, upper}
+	feedRows, err := db.conn.Query(`SELECT id FROM observers
+	 WHERE (id >= ? AND id < ?) OR (id >= ? AND id < ?)`, lower+"@", lower+"A", upper+"@", upper+"A")
+	if err != nil {
+		return nil, err
+	}
+	for feedRows.Next() {
+		var id string
+		if err := feedRows.Scan(&id); err != nil {
+			feedRows.Close()
+			return nil, err
+		}
+		if strings.EqualFold(observerPublicKey(id), pubkey) {
+			ids = append(ids, id)
+		}
+	}
+	err = feedRows.Err()
+	feedRows.Close()
+	if err != nil {
+		return nil, err
+	}
+	query := nodeBatteryHistorySQL
+	if len(ids) > 2 {
+		query = `SELECT timestamp,battery_mv FROM observer_metrics WHERE observer_id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",") + `) AND battery_mv IS NOT NULL AND timestamp >= ? ORDER BY timestamp ASC`
+	}
+	rows, err := db.conn.Query(query, append(ids, since)...)
 	if err != nil {
 		return nil, err
 	}

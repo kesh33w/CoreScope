@@ -287,7 +287,7 @@ func buildDirectObserverRows(byObs map[string]*directHeardAgg, nonRelay, seen ma
 			v := agg.RSSISum / float64(agg.RSSICount)
 			row.AvgRSSI = &v
 		}
-		idLower := strings.ToLower(id)
+		idLower := strings.ToLower(observerPublicKey(id))
 		if _, ok := seen[idLower]; ok {
 			_, isListener := nonRelay[idLower]
 			canRelay := !isListener

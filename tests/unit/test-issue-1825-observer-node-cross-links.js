@@ -29,16 +29,14 @@ console.log('\u2500\u2500 Observer <-> Node cross-links (#1825) \u2500\u2500');
 const obsSrc = fs.readFileSync(path.join(REPO_ROOT, 'public', 'observer-detail.js'), 'utf8');
 const nodesSrc = fs.readFileSync(path.join(REPO_ROOT, 'public', 'nodes.js'), 'utf8');
 
-// Note: #1836 introduced case-normalization on these hrefs (currentId →
-// currentId.toLowerCase(), n.public_key → n.public_key.toUpperCase()). The
-// regexes below accept an optional `.toLowerCase()`/`.toUpperCase()` call so
-// this test continues to guard the presence + placement of the cross-links
-// regardless of the case-normalization detail (which #1836 covers directly).
+// Node links project scoped observer feed IDs onto the real public key before
+// applying the case normalization introduced by #1836. Actual rendered-link
+// behavior is covered in test-observer-radio-node-link.js.
 
-test('observer-detail.js links to #/nodes/${encodeURIComponent(currentId[.toLowerCase()])}', () => {
+test('observer-detail.js links to the actual node public key', () => {
   assert.ok(
-    /href="#\/nodes\/\$\{encodeURIComponent\(currentId(?:\.toLowerCase\(\))?\)\}"/.test(obsSrc),
-    'expected anchor href="#/nodes/${encodeURIComponent(currentId[.toLowerCase()])}" in observer-detail.js'
+    /href="#\/nodes\/\$\{encodeURIComponent\(observerNodeKey\(currentId\)\.toLowerCase\(\)\)\}"/.test(obsSrc),
+    'expected a node link through observerNodeKey(currentId) in observer-detail.js'
   );
 });
 
@@ -46,7 +44,7 @@ test('observer-detail.js cross-link sits inside the .page-header block', () => {
   const m = obsSrc.match(/class="page-header"[\s\S]*?<\/div>/);
   assert.ok(m, '.page-header block not found in observer-detail.js');
   assert.ok(
-    /href="#\/nodes\/\$\{encodeURIComponent\(currentId(?:\.toLowerCase\(\))?\)\}"/.test(m[0]),
+    /href="#\/nodes\/\$\{encodeURIComponent\(observerNodeKey\(currentId\)\.toLowerCase\(\)\)\}"/.test(m[0]),
     'observer -> node cross-link is not inside the .page-header block'
   );
 });

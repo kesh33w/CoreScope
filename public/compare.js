@@ -69,6 +69,57 @@ function computeOverlapStats(cmp) {
   };
 }
 
+// Reception statistics preserve relay-path copies rather than counting only hashes.
+function computeReceptionStats(a, b) {
+  function summarize(rows) {
+    var hashes = new Set(), paths = new Map(), frames = new Set(), missing = 0;
+    rows.forEach(function(p) {
+      if (p.hash) hashes.add(p.hash);
+      if (p.path_json && p.hash) {
+        var path;
+        try { path = JSON.stringify(JSON.parse(p.path_json)); } catch (_) { path = null; }
+        if (path) { if (!paths.has(p.hash)) paths.set(p.hash, new Set()); paths.get(p.hash).add(path); }
+      }
+      if (p.raw_hex) frames.add(String(p.raw_hex).toLowerCase()); else missing++;
+    });
+    var alternate = 0; paths.forEach(function(v) { alternate += Math.max(0, v.size - 1); });
+    return { receptions: rows.length, messages: hashes.size, frames: frames.size, alternatePaths: alternate, missingRaw: missing };
+  }
+  function byFrame(rows) {
+    var frames = new Map();
+    rows.forEach(function(p) {
+      if (!p.raw_hex || p.snr == null || p.snr === '' || !Number.isFinite(Number(p.snr)) || !Number.isFinite(Number(p.timestamp))) return;
+      var key = String(p.raw_hex).toLowerCase();
+      if (!frames.has(key)) frames.set(key, []);
+      frames.get(key).push(p);
+    });
+    frames.forEach(function(v) { v.sort(function(x,y) { return Number(x.timestamp)-Number(y.timestamp); }); });
+    return frames;
+  }
+  var fa = byFrame(a), fb = byFrame(b), deltas = [];
+  fa.forEach(function(aa, key) {
+    var bb = fb.get(key); if (!bb) return;
+    // Sorted one-to-one matching. Never pair a frame twice, never match by hash alone.
+    var i=0,j=0;
+    while (i<aa.length && j<bb.length) {
+      var dt=Number(aa[i].timestamp)-Number(bb[j].timestamp);
+      if (dt < -10) i++; else if (dt > 10) j++; else {
+        deltas.push(Number(aa[i].snr)-Number(bb[j].snr)); i++;j++;
+      }
+    }
+  });
+  deltas.sort(function(x,y){return x-y;});
+  var n=deltas.length;
+  return {a:summarize(a),b:summarize(b),paired:{count:n,median:n ? (deltas[Math.floor((n-1)/2)]+deltas[Math.floor(n/2)])/2 : null}};
+}
+
+// Notes never leave this browser, enter the URL, or touch the measurement DB.
+function cleanExperimentNotes(notes) {
+  if (!Array.isArray(notes)) return [];
+  return notes.filter(function(n) { return n && typeof n.name==='string' && Number.isFinite(Date.parse(n.at)) && typeof n.a==='string' && typeof n.b==='string'; })
+    .slice(-50).map(function(n) { return {name:n.name.slice(0,160),at:new Date(n.at).toISOString(),a:n.a.slice(0,256),b:n.b.slice(0,256)}; });
+}
+
 // Expose for testing
 if (typeof window !== 'undefined') {
   window.comparePacketSets = comparePacketSets;
@@ -77,7 +128,16 @@ if (typeof window !== 'undefined') {
 }
 
 (function () {
-  var MAX_PACKETS = 10000;
+  var windowMinutes = 60;
+  var endTime = '';
+  var experimentMode = false;
+  var receptionStats = null;
+  var baselineStats = null;
+  var sampleInfo = null;
+  var baselineInfo = null;
+  var requestGeneration = 0;
+  var NOTES_KEY = 'corescope-experiment-notes-v1';
+
   var observers = [];
   var selA = null;
   var selB = null;
@@ -97,7 +157,12 @@ if (typeof window !== 'undefined') {
     packetsA = [];
     packetsB = [];
     currentView = 'summary';
-    routeFilter = 'all';
+    routeFilter = params.get('route') || 'all';
+    windowMinutes = [15,60,180,360,1440].includes(Number(params.get('minutes'))) ? Number(params.get('minutes')) : 60;
+    endTime = params.get('at') || '';
+    if (endTime && !Number.isFinite(Date.parse(endTime))) endTime = '';
+    experimentMode = params.get('experiment') === '1';
+    receptionStats = baselineStats = sampleInfo = baselineInfo = null;
 
     app.innerHTML = '<div class="compare-page">' +
       '<div class="page-header">' +
@@ -122,6 +187,7 @@ if (typeof window !== 'undefined') {
   }
 
   function destroy() {
+    requestGeneration++;
     observers = [];
     selA = null;
     selB = null;
@@ -184,7 +250,34 @@ if (typeof window !== 'undefined') {
             '<option value="direct">Direct only</option>' +
           '</select>' +
         '</div>' +
-      '</div>';
+      '</div>' +
+      '<div class="compare-window-controls">' +
+        '<label>Window <select id="compareMinutes"><option value="15">15 minutes</option><option value="60">1 hour</option><option value="180">3 hours</option><option value="360">6 hours</option><option value="1440">24 hours</option></select></label>' +
+        '<label>End time / change time (local) <input id="compareAt" type="datetime-local"></label>' +
+        '<label><input type="checkbox" id="compareExperiment"> Compare equal windows before and after this change</label>' +
+        '<button class="btn" id="compareRefresh">Compare</button>' +
+      '</div>' +
+      '<details class="compare-notes"><summary>Private experiment markers, this browser only</summary>' +
+        '<p>Record an antenna, filter or LNA change. Notes are not uploaded, shared or included in links.</p>' +
+        '<label>Note <input id="compareNote" maxlength="160" placeholder="What changed?"></label> <button class="btn" id="compareSaveNote">Save marker at change time</button>' +
+        '<div id="compareNotes"></div><p id="compareNoteStatus" role="status"></p></details>';
+
+    document.getElementById('compareMinutes').value = String(windowMinutes);
+    document.getElementById('compareExperiment').checked = experimentMode;
+    if (endTime) {
+      var d = new Date(endTime); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      document.getElementById('compareAt').value = d.toISOString().slice(0,16);
+    }
+    document.getElementById('compareRefresh').addEventListener('click', function() {
+      windowMinutes = Number(document.getElementById('compareMinutes').value);
+      var at = document.getElementById('compareAt').value;
+      endTime = at ? new Date(at).toISOString() : '';
+      experimentMode = document.getElementById('compareExperiment').checked;
+      if (experimentMode && !endTime) { document.getElementById('compareContent').textContent = 'Choose a change time for the before/after comparison.'; return; }
+      runComparison();
+    });
+    document.getElementById('compareSaveNote').addEventListener('click', saveMarker);
+    renderMarkers();
 
     var ddA = document.getElementById('compareObsA');
     var ddB = document.getElementById('compareObsB');
@@ -212,6 +305,7 @@ if (typeof window !== 'undefined') {
       renderBreadcrumbs();
     }
     function onChange() {
+      requestGeneration++;
       updateBtn();
       // change events only fire when value actually changes, so any
       // ready transition that lands here came from a real user action.
@@ -250,53 +344,95 @@ if (typeof window !== 'undefined') {
     el.innerHTML = parts.join(' <span aria-hidden="true">\u203A</span> ');
   }
 
-  function sinceISO(hours) {
-    return new Date(Date.now() - hours * 3600000).toISOString();
+  function readMarkers() {
+    try { return cleanExperimentNotes(JSON.parse(localStorage.getItem(NOTES_KEY) || '[]')); } catch (_) { return []; }
   }
-
-  async function runComparison() {
-    if (!selA || !selB || selA === selB) return;
-    var content = document.getElementById('compareContent');
-    if (!content) return;
-
-    content.innerHTML = '<div class="text-center text-muted" style="padding:40px">Fetching packets\u2026</div>';
-
-    // Update URL for shareability
-    var base = '#/compare?a=' + encodeURIComponent(selA) + '&b=' + encodeURIComponent(selB);
-    if (location.hash.split('?')[0] === '#/compare') {
-      history.replaceState(null, '', base);
-    }
-
+  function saveMarker() {
+    var status = document.getElementById('compareNoteStatus');
+    var name = document.getElementById('compareNote').value.trim();
+    var at = document.getElementById('compareAt').value;
+    if (!name || !at || !isComparisonReady()) { status.textContent = 'Choose two observers, a change time and a note first.'; return; }
     try {
-      var since24h = sinceISO(24);
-      var results = await Promise.all([
-        api('/packets?observer=' + encodeURIComponent(selA) + '&excludeTx=true&limit=' + MAX_PACKETS + '&since=' + encodeURIComponent(since24h)),
-        api('/packets?observer=' + encodeURIComponent(selB) + '&excludeTx=true&limit=' + MAX_PACKETS + '&since=' + encodeURIComponent(since24h))
-      ]);
+      localStorage.setItem(NOTES_KEY, JSON.stringify(cleanExperimentNotes(readMarkers().concat([{name:name,at:new Date(at).toISOString(),a:selA,b:selB}]))));
+      status.textContent = 'Saved only in this browser. Clearing site data removes these notes.'; renderMarkers();
+    } catch (_) { status.textContent = 'Browser storage is unavailable. Marker was not saved.'; }
+  }
+  function renderMarkers() {
+    var el=document.getElementById('compareNotes'); if (!el) return;
+    var notes=readMarkers();
+    el.replaceChildren();
+    notes.slice().reverse().forEach(function(n,index) {
+      var row=document.createElement('p'), use=document.createElement('button'), remove=document.createElement('button');
+      use.className=remove.className='btn';
+      use.textContent=new Date(n.at).toLocaleString()+' '+n.name;
+      use.addEventListener('click',function() {
+        selA=n.a;selB=n.b;endTime=n.at;experimentMode=true;renderControls();runComparison();
+      });
+      remove.textContent='Remove';
+      remove.addEventListener('click',function() {
+        try { var current=readMarkers(); current.splice(notes.length-1-index,1); localStorage.setItem(NOTES_KEY,JSON.stringify(current));renderMarkers(); }
+        catch (_) { document.getElementById('compareNoteStatus').textContent='Could not remove marker.'; }
+      });
+      row.append(use,remove);el.appendChild(row);
+    });
+  }
+  function comparisonRequest(start,end) {
+    return api('/observer-comparison?a='+encodeURIComponent(selA)+'&b='+encodeURIComponent(selB)+'&since='+encodeURIComponent(start.toISOString())+'&until='+encodeURIComponent(end.toISOString()), {ttl:10000});
+  }
+  function selectedRows(result,id) {
+    return filterPacketsByRoute((result.packets || []).filter(function(p){return p.observer_id===id;}),routeFilter);
+  }
+  async function runComparison() {
+    if (!isComparisonReady()) return;
+    var content=document.getElementById('compareContent');if (!content) return;
+    var generation=++requestGeneration;
+    content.textContent='Loading reception sample…';
+    var at=endTime ? new Date(endTime) : new Date(), duration=windowMinutes*60000;
+    var start=experimentMode ? at : new Date(at.getTime()-duration);
+    var end=experimentMode ? new Date(at.getTime()+duration) : at;
+    if (end.getTime()>Date.now()+1000) { content.textContent='The complete after window is not available yet. Choose a shorter window or an earlier change time.';return; }
+    var params=new URLSearchParams({a:selA,b:selB,minutes:String(windowMinutes),route:routeFilter});
+    if (endTime) params.set('at',endTime);
+    if (experimentMode) params.set('experiment','1');
+    if (location.hash.split('?')[0]==='#/compare') history.replaceState(null,'','#/compare?'+params.toString());
+    try {
+      var result=await comparisonRequest(start,end);
+      if(generation!==requestGeneration)return;
+      packetsA=selectedRows(result,selA);packetsB=selectedRows(result,selB);
+      sampleInfo=result;baselineInfo=baselineStats=null;
+      receptionStats=computeReceptionStats(packetsA,packetsB);
+      if(experimentMode) {
+        var before=await comparisonRequest(new Date(at.getTime()-duration),at);
+        if(generation!==requestGeneration)return;
+        baselineInfo=before;baselineStats=computeReceptionStats(selectedRows(before,selA),selectedRows(before,selB));
+      }
+      comparisonResult=comparePacketSets(new Set(packetsA.map(function(p){return p.hash;})),new Set(packetsB.map(function(p){return p.hash;})));
+      comparisonResult.packetMapA=new Map();comparisonResult.packetMapB=new Map();
+      packetsA.forEach(function(p){comparisonResult.packetMapA.set(p.hash,p);});
+      packetsB.forEach(function(p){comparisonResult.packetMapB.set(p.hash,p);});
+      currentView='summary';renderComparison();
+    } catch(e) { if(generation===requestGeneration) content.textContent='Comparison unavailable: '+e.message; }
+  }
+  function receptionSummary() {
+    if(!receptionStats || !sampleInfo)return '';
+    function table(stats,title) {
+      var pair=stats.paired;
+      var rows=[['Stored receptions',stats.a.receptions,stats.b.receptions],['Distinct message hashes',stats.a.messages,stats.b.messages],['Additional relay paths',stats.a.alternatePaths,stats.b.alternatePaths],['Distinct stored frames',stats.a.frames,stats.b.frames],['Receptions without stored bytes',stats.a.missingRaw,stats.b.missingRaw]];
+      return '<h3>'+title+'</h3><div class="table-scroll"><table><thead><tr><th>Measure</th><th>A</th><th>B, reference</th></tr></thead><tbody>'+rows.map(function(r){return '<tr><th>'+r[0]+'</th><td>'+r[1].toLocaleString()+'</td><td>'+r[2].toLocaleString()+'</td></tr>';}).join('')+'</tbody></table></div>'+
+        '<p>Paired SNR, A minus B: <strong>'+(pair.median==null?'Not available':pair.median.toFixed(1)+' dB')+'</strong>. '+pair.count+' one-to-one identical-frame pairs within 10 seconds.'+(pair.count<30?' Small sample; do not infer an improvement.':'')+'</p>';
 
-      packetsA = results[0].packets || [];
-      packetsB = results[1].packets || [];
-
-      // Apply flood/direct filter (#928)
-      var filteredA = filterPacketsByRoute(packetsA, routeFilter);
-      var filteredB = filterPacketsByRoute(packetsB, routeFilter);
-
-      var hashesA = new Set(filteredA.map(function (p) { return p.hash; }));
-      var hashesB = new Set(filteredB.map(function (p) { return p.hash; }));
-
-      comparisonResult = comparePacketSets(hashesA, hashesB);
-
-      // Build hash→packet lookups for detail rendering
-      comparisonResult.packetMapA = new Map();
-      comparisonResult.packetMapB = new Map();
-      filteredA.forEach(function (p) { comparisonResult.packetMapA.set(p.hash, p); });
-      filteredB.forEach(function (p) { comparisonResult.packetMapB.set(p.hash, p); });
-
-      currentView = 'summary';
-      renderComparison();
-    } catch (e) {
-      content.innerHTML = '<div class="text-muted" style="padding:40px">Error: ' + escapeHtml(e.message) + '</div>';
     }
+    var partial=sampleInfo.truncated || (baselineInfo && baselineInfo.truncated);
+    var html='<section class="compare-receptions"><p>'+escapeHtml(new Date(sampleInfo.since).toLocaleString())+' to '+escapeHtml(new Date(sampleInfo.until).toLocaleString())+'</p>'+
+      '<p class="text-muted">On-demand sample. Up to '+sampleInfo.observer_cap.toLocaleString()+' receptions per observer from the newest '+sampleInfo.scan_cap.toLocaleString()+' site observations in the window. TX reports excluded. No stored bytes means no SNR pairing; flood/direct filters omit records without a reception header.</p>'+
+      (partial?'<p class="compare-warning"><strong>Sample capped. Reception totals are lower bounds; overlap and exclusives may be misleading. These windows cannot establish improvement. Shorten the window.</strong></p>':'<p>Full stored reception sample for this window. This does not prove continuous observer uptime or complete MQTT delivery.</p>');
+    if(baselineStats) {
+      html+=table(baselineStats,'Before change')+table(receptionStats,'After change');
+      var oldRatio=baselineStats.b.receptions ? baselineStats.a.receptions/baselineStats.b.receptions : null;
+      var newRatio=receptionStats.b.receptions ? receptionStats.a.receptions/receptionStats.b.receptions : null;
+      html+='<p>A receptions per 100 at reference B: '+(oldRatio==null?'unavailable':(oldRatio*100).toFixed(1))+' before; '+(newRatio==null?'unavailable':(newRatio*100).toFixed(1))+' after. A reference helps account for changing traffic; different frequencies, uptime, TX activity and propagation still confound this comparison.</p>';
+    } else html+=table(receptionStats,'Reception comparison');
+    return html+'<p>Compare observers on the same RF settings. Additional paths count distinct recorded paths beyond the first for each message, not duplicate uploads. Stored receptions include retained repeat observations; ingest deduplication may have collapsed identical reports. Message hashes count each message once.</p></section>';
   }
 
   function obsName(id) {
@@ -337,7 +473,7 @@ if (typeof window !== 'undefined') {
     var stats = computeOverlapStats(r);
 
     content.innerHTML =
-      '<div class="compare-results">' +
+      '<div class="compare-results">' + receptionSummary() +
         // Headline strip — A | shared | B above a single proportional bar.
         // All three cells lead with their percentage so the row reads in
         // one unit (Tufte: show data variation, not design variation).
@@ -430,12 +566,12 @@ if (typeof window !== 'undefined') {
     }
 
     // Bind tab clicks + strip clicks
-    content.addEventListener('click', function handler(e) {
+    content.onclick = function(e) {
       var btn = e.target.closest('[data-cview]');
       if (btn) { activate(btn); return; }
       var seg = e.target.closest('[data-view]');
       if (seg) { activate(seg); }
-    });
+    };
 
     // Keyboard activation for tabs (arrow nav) + strip segments (Enter/Space).
     content.addEventListener('keydown', function (e) {
@@ -484,7 +620,7 @@ if (typeof window !== 'undefined') {
       var overlap = total > 0 ? (r.both.length / total * 100).toFixed(1) : '0.0';
       el.innerHTML =
         '<div class="compare-summary-text">' +
-          '<p>In the last 24 hours, <strong>' + nameA + '</strong> saw <strong>' +
+          '<p>In the selected reception sample, <strong>' + nameA + '</strong> saw <strong>' +
             (r.onlyA.length + r.both.length).toLocaleString() + '</strong> unique packets ' +
           'and <strong>' + nameB + '</strong> saw <strong>' +
             (r.onlyB.length + r.both.length).toLocaleString() + '</strong> unique packets. ' +
@@ -527,7 +663,7 @@ if (typeof window !== 'undefined') {
           }
           return '<tr style="cursor:pointer" tabindex="0" role="row" data-action="navigate" data-value="#/packets/' + escapeHtml(h) + '" onclick="location.hash=\'#/packets/' + escapeHtml(h) + '\'">' +
             '<td class="mono" style="font-size:0.85em">' + escapeHtml(h.substring(0, 12)) + '</td>' +
-            '<td>' + timeAgo(p.timestamp || p.first_seen) + '</td>' +
+            '<td>' + timeAgo(typeof p.timestamp === 'number' ? new Date(p.timestamp * 1000).toISOString() : (p.timestamp || p.first_seen)) + '</td>' +
             '<td><span class="payload-badge badge-' + payloadTypeColor(p.payload_type) + '">' + escapeHtml(typeName) + '</span></td>' +
             '<td>' + obsLabel + '</td>' +
           '</tr>';

@@ -217,7 +217,8 @@ func TestOpenAPIPacketQueryBehavior(t *testing.T) {
 			want        []string
 		}{
 			{"memory", "since", nil},
-			{"memory", "until", []string{olderAdvert, message}},
+			// An end-only query includes uncached history and delegates to SQL.
+			{"memory", "until", []string{olderAdvert, message, advert}},
 			{"SQL", "since", []string{advert}},
 			{"SQL", "until", []string{olderAdvert, message, advert}},
 			{"nodes", "since", []string{advert}},

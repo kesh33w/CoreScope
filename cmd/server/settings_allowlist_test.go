@@ -38,8 +38,8 @@ func TestSettingsAllowlistShape(t *testing.T) {
 			t.Errorf("set %q identity = %q (present %v); want %q", k, got, ok, id)
 		}
 	}
-	if len(settingsAllowlist) != 61 {
-		t.Errorf("allowlist has %d keys; the spec table has 61", len(settingsAllowlist))
+	if len(settingsAllowlist) != 60 {
+		t.Errorf("allowlist has %d keys; the spec table has 60", len(settingsAllowlist))
 	}
 }
 
