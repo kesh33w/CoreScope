@@ -281,7 +281,7 @@ func (c *Client) readPump(hub *Hub) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	c.conn.SetReadLimit(512)
+	c.conn.SetReadLimit(65536) // bounded page metadata; never message-content collection
 	c.conn.SetReadDeadline(time.Now().Add(timeout))
 	c.conn.SetPongHandler(func(string) error {
 		c.telemetry.activity(c.telemetryID, "pong", 0)

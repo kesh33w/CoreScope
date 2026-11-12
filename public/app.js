@@ -879,7 +879,7 @@ function checkWSLiveness() {
 }
 
 // Private connection monitoring receives only this fixed page vocabulary.
-// Never send the hash, query, search text, or selected node/packet identifier.
+// Full bounded browser URLs are reported only to private connection monitoring.
 function telemetryPageId(hash) {
   const route = String(hash || '').replace(/^#\/?/, '').split('?')[0];
   const parts = route.split('/');
@@ -904,13 +904,46 @@ function telemetryPageId(hash) {
   }
 }
 
+// Compact arrival label; bounded full URLs are reported separately below.
+// Empty referrer is ambiguous (direct visit, privacy settings, or an app).
+function telemetryArrivalHost(referrer) {
+  try {
+    const url = new URL(referrer);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    const host = url.hostname.toLowerCase();
+    return host.length <= 253 && (/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host) || /^\[[0-9a-f:]+\]$/.test(host)) ? host : '';
+  } catch (_) { return ''; }
+}
+function telemetryBoundedURL(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return { url: '', truncated: false };
+    const bytes = new TextEncoder().encode(raw);
+    if (bytes.length <= 4096) return { url: raw, truncated: false };
+    // Decode a whole UTF-8 prefix without a replacement character at the boundary.
+    const prefix = new TextDecoder('utf-8', { fatal: true });
+    for (let n = 4096; n >= 4092; n--) {
+      try { return { url: prefix.decode(bytes.slice(0, n)), truncated: true }; } catch (_) {}
+    }
+  } catch (_) {}
+  return { url: '', truncated: false };
+}
+const telemetryDocumentArrivalHost = telemetryArrivalHost(document.referrer);
+const telemetryDocumentArrivalURL = telemetryBoundedURL(document.referrer);
+
 function reportCurrentPage(sock) {
   if (!sock || sock.readyState !== 1) return;
   const page = telemetryPageId(location.hash);
-  if (sock._reportedPage === page) return;
+  const currentURL = telemetryBoundedURL(location.href);
+  if (sock._reportedPage === page && sock._reportedURL === currentURL.url) return;
   try {
-    sock.send(JSON.stringify({ type: 'page_view', page }));
+    sock.send(JSON.stringify({ type: 'page_view', page,
+      arrival_host: telemetryDocumentArrivalHost,
+      arrival_url: telemetryDocumentArrivalURL.url,
+      arrival_url_truncated: telemetryDocumentArrivalURL.truncated,
+      page_url: currentURL.url, page_url_truncated: currentURL.truncated }));
     sock._reportedPage = page;
+    sock._reportedURL = currentURL.url;
   } catch (_) { /* Navigation must work even if the socket is closing. */ }
 }
 

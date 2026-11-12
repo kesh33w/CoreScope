@@ -7,7 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../../public/app.js'), 'utf
 const start = source.indexOf('function telemetryPageId(');
 const end = source.indexOf('function connectWS()', start);
 assert(start >= 0 && end > start);
-const context = { location: {hash: '#/live'}, JSON };
+const context = { location: {hash: '#/live', href: 'https://scope.example/#/live'}, document: {referrer: ''}, JSON, URL, TextEncoder, TextDecoder };
 vm.createContext(context);
 vm.runInContext(source.slice(start, end), context);
 for (const [hash, expected] of [
@@ -24,7 +24,8 @@ context.reportCurrentPage(sock);
 assert.strictEqual(sent.length,1);
 context.location.hash='#/nodes/private?query=secret';
 context.reportCurrentPage(sock);
-assert.deepStrictEqual(sent[1], {type:'page_view',page:'nodes'});
+assert.strictEqual(sent[1].page, 'nodes');
+assert.strictEqual(sent[1].page_url, 'https://scope.example/#/live');
 assert(!JSON.stringify(sent).includes('private'));
 context.location.hash='#/unknown-private';
 context.reportCurrentPage(sock);
@@ -37,4 +38,4 @@ context.reportCurrentPage(next);
 assert.strictEqual(sent.length,4,'new connection must report even same page');
 assert(source.includes('reportCurrentPage(sock);'), 'socket open wired');
 assert(source.includes('currentPage = basePage;\n  reportCurrentPage(ws);'), 'navigation wired');
-console.log('page telemetry privacy/navigation tests passed');
+console.log('page telemetry bounded metadata/navigation tests passed');
