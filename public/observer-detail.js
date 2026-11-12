@@ -69,6 +69,13 @@ window.ObserverDetailNaiveBanner = {
     return m + 'm';
   }
 
+  // Scoped radio feeds have database IDs, while node pages use the actual
+  // public key. Only strip our explicit full-key/radio/region suffix format.
+  function observerNodeKey(id) {
+    const feed = /^([a-fA-F0-9]{64})@[a-zA-Z0-9_-]{1,32}@[a-zA-Z0-9_-]{1,16}$/.exec(id);
+    return feed ? feed[1] : id;
+  }
+
   function init(app, routeParam) {
     currentId = routeParam;
     if (!currentId) {
@@ -81,7 +88,7 @@ window.ObserverDetailNaiveBanner = {
         <div class="page-header" style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
           <a href="#/observers" class="btn-icon" title="Back to Observers" aria-label="Back">←</a>
           <h2 style="margin:0" id="obsTitle">Observer Detail</h2>
-          <a href="#/nodes/${encodeURIComponent(currentId.toLowerCase())}" class="btn-secondary" title="View this pubkey as a node" style="text-decoration:none;font-size:12px;padding:4px 10px">View node detail →</a>
+          <a href="#/nodes/${encodeURIComponent(observerNodeKey(currentId).toLowerCase())}" class="btn-secondary" title="View this pubkey as a node" style="text-decoration:none;font-size:12px;padding:4px 10px">View node detail →</a>
           <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <span class="compare-with-group">
               <label class="sr-only" for="obsCompareWithPicker">Compare with another observer</label>

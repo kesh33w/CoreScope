@@ -22,11 +22,21 @@ const legacyAdvertObservationSQL = `SELECT raw_hex FROM observations
 // Caller holds writerMu, including through the subsequent observation UPSERT.
 // The backfill commits evidence and obs_cursor together under that same lock.
 func (s *Store) preserveLegacyAdvertObservation(txID, observerIdx int64, path string) error {
+	return s.preserveLegacyAdvertObservationWithStatements(s.stmtGetLegacyAdvertObservation, s.stmtInsertAdvertEvidence, txID, observerIdx, path)
+}
+
+// preserveLegacyAdvertObservationTx keeps the evidence read and insert on the
+// packet's connection, before its observation UPSERT can replace the old raw.
+func (s *Store) preserveLegacyAdvertObservationTx(tx *sql.Tx, txID, observerIdx int64, path string) error {
+	return s.preserveLegacyAdvertObservationWithStatements(tx.Stmt(s.stmtGetLegacyAdvertObservation), tx.Stmt(s.stmtInsertAdvertEvidence), txID, observerIdx, path)
+}
+
+func (s *Store) preserveLegacyAdvertObservationWithStatements(get, insert *sql.Stmt, txID, observerIdx int64, path string) error {
 	if s.advertEvidenceComplete.Load() {
 		return nil
 	}
 	var raw sql.NullString
-	err := s.stmtGetLegacyAdvertObservation.QueryRow(txID, observerIdx, path).Scan(&raw)
+	err := get.QueryRow(txID, observerIdx, path).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -34,7 +44,7 @@ func (s *Store) preserveLegacyAdvertObservation(txID, observerIdx int64, path st
 		return err
 	}
 	if bit := packetpath.AdvertRouteEvidence(raw.String); bit != 0 {
-		_, err = s.stmtInsertAdvertEvidence.Exec(txID, bit, txID, bit)
+		_, err = insert.Exec(txID, bit, txID, bit)
 	}
 	return err
 }

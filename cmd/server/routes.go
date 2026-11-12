@@ -341,6 +341,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/nodes/{pubkey}/battery", s.handleNodeBattery).Methods("GET")
 	r.HandleFunc("/api/nodes/clock-skew", s.handleFleetClockSkew).Methods("GET")
 	r.HandleFunc("/api/nodes/{pubkey}/clock-skew", s.handleNodeClockSkew).Methods("GET")
+	r.HandleFunc("/api/observer-comparison", s.handleObserverComparison).Methods("GET")
 	r.HandleFunc("/api/observers/clock-skew", s.handleObserverClockSkew).Methods("GET")
 	r.HandleFunc("/api/nodes/{pubkey}/neighbors", s.handleNodeNeighbors).Methods("GET")
 	// Keep specific sub-routes (…/reach, …/rx-coverage) registered BEFORE the
@@ -3079,7 +3080,7 @@ func (s *Server) buildObserversDefaultResponse() (ObserverListResponse, error) {
 	// Batch lookup: node locations only for observer IDs (not all nodes)
 	observerIDs := make([]string, len(observers))
 	for i, o := range observers {
-		observerIDs[i] = o.ID
+		observerIDs[i] = observerPublicKey(o.ID)
 	}
 	nodeLocations := s.db.GetNodeLocationsByKeys(observerIDs)
 
@@ -3096,7 +3097,7 @@ func (s *Server) buildObserversDefaultResponse() (ObserverListResponse, error) {
 			plh = c
 		}
 		var lat, lon, nodeRole interface{}
-		if nodeLoc, ok := nodeLocations[strings.ToLower(o.ID)]; ok {
+		if nodeLoc, ok := nodeLocations[strings.ToLower(observerPublicKey(o.ID))]; ok {
 			lat = nodeLoc["lat"]
 			lon = nodeLoc["lon"]
 			nodeRole = nodeLoc["role"]

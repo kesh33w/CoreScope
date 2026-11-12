@@ -57,7 +57,7 @@ var settingsAllowlist = append([]settingsKey{
 	// home
 	"meshcore-user-level",
 	// live
-	"meshcore-live-heatmap", "live-ghost-hops", "live-realistic-propagation", "live-favorites-only",
+	"meshcore-live-heatmap", "live-realistic-propagation", "live-favorites-only",
 	"live-multibyte-only", "live-matrix-mode", "live-matrix-rain", "meshcore-color-packets-by-hash",
 	"live-node-filter", "live-vcr-speed", "live-audio-voice", "live-audio-enabled", "live-audio-bpm",
 	"live-audio-volume",

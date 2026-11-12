@@ -55,7 +55,6 @@
   // keeps them honest). Nothing else writes 'meshcore-live-heatmap' -- checked
   // across the tree, the only writer is the heat onChange below.
   let heatEnabled = localStorage.getItem('meshcore-live-heatmap') !== 'false';
-  let showGhostHops = localStorage.getItem('live-ghost-hops') !== 'false';
   let realisticPropagation = localStorage.getItem('live-realistic-propagation') === 'true';
   let showOnlyFavorites = localStorage.getItem('live-favorites-only') === 'true';
   let multibyteOnly = localStorage.getItem('live-multibyte-only') === 'true';
@@ -69,6 +68,8 @@
   let nodeFilterShown = 0;
   // Region filter (#1045): observer_id → IATA code, populated from /api/observers
   let observerIataMap = {};
+  let observerData = {};
+  let observerCoords = {};
   let regionFilterChangeHandler = null;
 
   /**
@@ -1150,12 +1151,6 @@
           localStorage.setItem('meshcore-live-heatmap', heatEnabled);
           if (v) showHeatMap(); else hideHeatMap();
         } },
-      { id: 'liveGhostToggle',
-        restore: () => showGhostHops,
-        onChange: (v) => {
-          showGhostHops = v;
-          localStorage.setItem('live-ghost-hops', showGhostHops);
-        } },
       { id: 'liveRealisticToggle',
         restore: () => realisticPropagation,
         onChange: (v) => {
@@ -1279,8 +1274,7 @@
             <div class="live-toggles">
             <label><input type="checkbox" id="liveHeatToggle" checked aria-describedby="heatDesc"> Heat</label>
             <span id="heatDesc" class="sr-only">Overlay a density heat map on the mesh nodes</span>
-            <label><input type="checkbox" id="liveGhostToggle" checked aria-describedby="ghostDesc"> Inferred Hops</label>
-            <span id="ghostDesc" class="sr-only">Show inferred hop markers for unknown hops</span>
+            <span title="Unknown hops have no reliable map position. Paths stop at each gap.">Unknown hops leave gaps</span>
             <label><input type="checkbox" id="liveRealisticToggle" aria-describedby="realisticDesc"> Realistic</label>
             <span id="realisticDesc" class="sr-only">Buffer packets by hash and animate all paths simultaneously</span>
             <label><input type="checkbox" id="liveColorHashToggle" aria-describedby="colorHashDesc"> Color by hash</label>
@@ -1732,9 +1726,7 @@
       // (cmd/server/types.go ObserverListResponse) — NOT a top-level array.
       // Bug #1136: previously parsed as array → map empty → region filter
       // dropped every packet.
-      fetch('/api/observers').then(function(r) { return r.json(); }).then(function(data) {
-        setObserverIataMap(buildObserverIataMap(data));
-      }).catch(function() { /* leave map empty; filter will hide all when active */ });
+      // loadNodes already populated observer context before this filter mounts.
       RegionFilter.init(rfEl, { dropdown: true });
       regionFilterChangeHandler = RegionFilter.onChange(function() {
         // #1108 — when the region selection changes, reload visible map
@@ -2759,9 +2751,12 @@
       // so the live map isn't truncated to the top-N by advert. LIVE_MAP_MAX_NODES
       // is passed as safetyCap, which fetchAllNodes enforces as a hard ceiling on
       // returned nodes — so the live map never renders more than the configured max.
-      const { nodes: list } = await fetchAllNodes(`${beforeQs}${aqs}${rqs}`, {
-        safetyCap: window.LIVE_MAP_MAX_NODES || 10000,
-      });
+      const [{ nodes: list }] = await Promise.all([
+        fetchAllNodes(`${beforeQs}${aqs}${rqs}`, {
+          safetyCap: window.LIVE_MAP_MAX_NODES || 10000,
+        }),
+        loadLiveObservers(),
+      ]);
       var now = Date.now();
       // Time-scoped reload (VCR scrub/replay): reconcile against the existing
       // markers instead of tearing the layer down. addNodeMarker() already
@@ -2805,11 +2800,30 @@
       });
       const _el2 = document.getElementById('liveNodeCount'); if (_el2) _el2.textContent = Object.keys(nodeMarkers).length;
       // Initialize shared HopResolver with loaded nodes
-      if (window.HopResolver) HopResolver.init(list);
+      if (window.HopResolver) initLiveHopResolver(list);
       // Fetch affinity data for hop disambiguation
       fetchAffinityData();
       startAffinityRefresh();
     } catch (e) { console.error('Failed to load nodes:', e); }
+  }
+
+  // The resolver needs the receiving observer, not just the sender or prefixes.
+  // Keep this context when adverts or pruning rebuild its node index.
+  async function loadLiveObservers() {
+    try {
+      const [data, coords] = await Promise.all([
+        api('/observers', { ttl: 60000 }),
+        api('/iata-coords', { ttl: 300000 }).catch(() => ({ coords: observerCoords })),
+      ]);
+      const list = Array.isArray(data) ? data : (data.observers || []);
+      observerData = Object.fromEntries(list.map(o => [o.id, o]));
+      observerCoords = coords.coords || {};
+      setObserverIataMap(buildObserverIataMap(data));
+    } catch (e) { console.warn('Failed to load live observer context:', e); }
+  }
+
+  function initLiveHopResolver(nodes) {
+    HopResolver.init(nodes, { observers: Object.values(observerData), iataCoords: observerCoords });
   }
 
   let _affinityInterval = null;
@@ -2826,7 +2840,14 @@
 
   function startAffinityRefresh() {
     if (_affinityInterval) clearInterval(_affinityInterval);
-    _affinityInterval = setInterval(fetchAffinityData, 60000);
+    _affinityInterval = setInterval(() => {
+      fetchAffinityData();
+      // Newly discovered receivers need anchors too. One cached bulk refresh
+      // per minute keeps this bounded and never fetches from the packet loop.
+      loadLiveObservers().then(() => {
+        if (map && window.HopResolver) initLiveHopResolver(Object.values(nodeData));
+      });
+    }, 60000);
   }
 
   function clearNodeMarkers() {
@@ -2835,7 +2856,7 @@
     nodeMarkers = {};
     nodeData = {};
     nodeActivity = {};
-    if (window.HopResolver) HopResolver.init([]);
+    if (window.HopResolver) initLiveHopResolver([]);
     if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
   }
 
@@ -3213,7 +3234,7 @@
     if (pruned) {
       var _el2 = document.getElementById('liveNodeCount');
       if (_el2) _el2.textContent = Object.keys(nodeMarkers).length;
-      if (window.HopResolver) HopResolver.init(Object.values(nodeData));
+      if (window.HopResolver) initLiveHopResolver(Object.values(nodeData));
     }
     // Prune orphaned nodeActivity entries (nodes removed above or never tracked)
     for (var aKey in nodeActivity) {
@@ -3254,6 +3275,7 @@
   window._liveSetNodeFilter = setNodeFilter;
   window._liveFormatLiveTimestampHtml = formatLiveTimestampHtml;
   window._liveResolveHopPositions = resolveHopPositions;
+  window._liveSplitLocatedHopPositions = splitLocatedHopPositions;
   window._liveVcrSpeedCycle = vcrSpeedCycle;
   window._liveSpeedLabel = speedLabel;
   window._liveVcrPause = vcrPause;
@@ -3418,7 +3440,7 @@
           var n = { public_key: key, name: p.name || key.slice(0,8), role: p.role || 'unknown', lat: p.lat, lon: p.lon, _liveSeen: Date.now() };
           nodeData[key] = n;
           addNodeMarker(n);
-          if (window.HopResolver) HopResolver.init(Object.values(nodeData));
+          if (window.HopResolver) initLiveHopResolver(Object.values(nodeData));
         } else if (nodeData[key]) {
           nodeData[key]._liveSeen = Date.now();
         }
@@ -3494,27 +3516,21 @@
       } else {
         hops = qd.path?.hops || [];
       }
-      var pathKey = hops.join(',');
+      // Identical prefixes can resolve differently at different receivers.
+      var resolvedPath = window.getResolvedPath ? getResolvedPath(qpkt) : null;
+      var pathKey = JSON.stringify([hops, qpkt.observer_id || '', resolvedPath]);
       if (seenPathKeys.has(pathKey)) continue;
       seenPathKeys.add(pathKey);
-      var hopPositions = resolveHopPositions(hops, qp, window.getResolvedPath ? getResolvedPath(qpkt) : null);
+      var hopPositions = resolveHopPositions(hops, qp, resolvedPath, qpkt.observer_id);
       if (hopPositions.length >= 2) {
         allPaths.push({ hopPositions: hopPositions, raw: qpkt.raw || first.raw });
-      } else if (hopPositions.length === 1) {
+      } else if (hopPositions.length === 1 && hopPositions[0].pos) {
         pulseNode(hopPositions[0].key, hopPositions[0].pos, typeName);
       }
     }
 
-    // If no multi-hop paths found, try the decoded path as fallback
-    if (allPaths.length === 0) {
-      var fallbackHops = decoded.path?.hops || [];
-      var fallbackPositions = resolveHopPositions(fallbackHops, payload);
-      if (fallbackPositions.length >= 2) {
-        allPaths.push({ hopPositions: fallbackPositions, raw: first.raw });
-      } else if (fallbackPositions.length === 1) {
-        pulseNode(fallbackPositions[0].key, fallbackPositions[0].pos, typeName);
-      }
-    }
+    // Each observation already falls back to its decoded path above. Do not
+    // retry without its observer anchor when inference leaves unknown hops.
 
     // --- Animate all unique paths simultaneously ---
     // First path gets audio sync hook, rest are visual-only
@@ -3538,7 +3554,7 @@
         var remainingPositions = allPaths[ai].hopPositions.slice(hopsCompleted);
         if (completedPositions.length >= 2) {
           animatePath(completedPositions, typeName, color, allPaths[ai].raw, onHop, pktMeta);
-        } else if (completedPositions.length === 1) {
+        } else if (completedPositions.length === 1 && completedPositions[0].pos) {
           pulseNode(completedPositions[0].key, completedPositions[0].pos, typeName);
         }
         if (remainingPositions.length >= 2) {
@@ -3552,6 +3568,12 @@
 
   // Draw a static dashed/ghosted line for unreached TRACE hops
   function drawDashedPath(hopPositions, color) {
+    if (hopPositions.some(h => !h.pos)) {
+      splitLocatedHopPositions(hopPositions).forEach(segment => {
+        if (segment.length >= 2) drawDashedPath(segment, color);
+      });
+      return;
+    }
     var GHOST_TIMEOUT_MS = 10000;
     var ghostColor = getComputedStyle(document.documentElement).getPropertyValue('--trace-ghost-color').trim() || '#94a3b8';
     if (!pathsLayer) return;
@@ -3584,79 +3606,64 @@
     }
   }
 
-  function resolveHopPositions(hops, payload, resolvedPath) {
-    // Hoist sender GPS guard once — reject (0,0) as "no GPS"
-    const hasValidGps = payload.lat != null && payload.lon != null
-      && !(payload.lat === 0 && payload.lon === 0);
-    const senderLat = hasValidGps ? payload.lat : null;
-    const senderLon = hasValidGps ? payload.lon : null;
+  function resolveHopPositions(hops, payload, resolvedPath, observerId) {
+    payload = payload || {};
+    const prefixes = hops.map(h => typeof h === 'string' ? h : String((h && (h.prefix || h.id)) || ''));
+    const located = n => n && n.lat != null && n.lon != null
+      && Number.isFinite(Number(n.lat)) && Number.isFinite(Number(n.lon))
+      && !(Number(n.lat) === 0 && Number(n.lon) === 0);
+    const receiver = observerData[observerId];
+    const anchored = located(payload) || located(receiver)
+      || located(observerCoords[receiver && receiver.iata]);
+    // A failed roster fetch or a new receiver must not turn a matching
+    // prefix on the other side of the country into an asserted location.
+    const inferred = (anchored && window.HopResolver && HopResolver.ready())
+      ? HopResolver.inferPath(prefixes, {
+        observer: receiver, observerId: observerId,
+        origin: payload, resolvedPath: resolvedPath,
+      }) : [];
 
-    // Prefer server-side resolved_path when available
-    var resolvedMap;
-    if (resolvedPath && resolvedPath.length === hops.length && window.HopResolver && HopResolver.ready()) {
-      resolvedMap = HopResolver.resolveFromServer(hops, resolvedPath);
-      // Fill in any null entries from client-side fallback, preserving sender GPS context
-      var nullHops = hops.filter(function(h, i) { return !resolvedPath[i] && !resolvedMap[h]; });
-      if (nullHops.length) {
-        var fallback = HopResolver.resolve(nullHops, senderLat, senderLon, null, null, null);
-        for (var k in fallback) resolvedMap[k] = fallback[k];
+    // Keep one slot per hop. Filtering out unknowns would falsely connect
+    // their neighbours; interpolating a position would invent geography.
+    const raw = prefixes.map((hop, i) => {
+      const r = inferred[i];
+      if (r && r.located && !r.unlisted && !r.unreliable) {
+        return { key: r.pubkey, pos: [Number(r.lat), Number(r.lon)],
+          name: r.name || r.pubkey.slice(0, 8), known: true };
       }
-    } else {
-      // Delegate to shared HopResolver (from hop-resolver.js) instead of reimplementing
-      // Use HopResolver if available and initialized, otherwise fall back to simple lookup
-      resolvedMap = (window.HopResolver && HopResolver.ready())
-        ? HopResolver.resolve(hops, senderLat, senderLon, null, null, null)
-        : {};
-    }
-
-    // Convert HopResolver's map format to the array format live.js expects: {key, pos, name, known}
-    const raw = hops.map(hop => {
-      const r = resolvedMap[hop];
-      if (r && r.name && r.pubkey && !r.unreliable) {
-        // Look up coordinates from nodeData (HopResolver resolves name/pubkey but doesn't return lat/lon directly)
-        const node = nodeData[r.pubkey];
-        if (node && node.lat != null && node.lon != null && !(node.lat === 0 && node.lon === 0)) {
-          return { key: r.pubkey, pos: [node.lat, node.lon], name: r.name, known: true };
-        }
-        return { key: r.pubkey, pos: null, name: r.name, known: false };
-      }
-      return { key: 'hop-' + hop, pos: null, name: hop, known: false };
+      return { key: 'hop-' + i + '-' + hop, pos: null, name: hop, known: false };
     });
-
-    // Add sender position as anchor if available
-    if (payload.pubKey && senderLat != null) {
-      const existing = raw.find(p => p.key === payload.pubKey);
-      if (!existing) {
-        raw.unshift({ key: payload.pubKey, pos: [payload.lat, payload.lon], name: payload.name || payload.pubKey.slice(0, 8), known: true });
-      }
+    const hasValidGps = located(payload);
+    if (payload.pubKey && hasValidGps && !raw.some(p => p.key === payload.pubKey)) {
+      raw.unshift({ key: payload.pubKey, pos: [Number(payload.lat), Number(payload.lon)],
+        name: payload.name || payload.pubKey.slice(0, 8), known: true });
     }
+    return raw;
+  }
 
-    if (!showGhostHops) return raw.filter(h => h.known);
-
-    const knownPos2 = raw.filter(h => h.known);
-    if (knownPos2.length < 2) return raw.filter(h => h.known);
-
-    for (let i = 0; i < raw.length; i++) {
-      if (raw[i].known) continue;
-      let before = null, after = null;
-      for (let j = i - 1; j >= 0; j--) { if (raw[j].known || raw[j].pos) { before = raw[j].pos; break; } }
-      for (let j = i + 1; j < raw.length; j++) { if (raw[j].known) { after = raw[j].pos; break; } }
-      if (before && after) {
-        let gapStart = i, gapEnd = i;
-        for (let j = i - 1; j >= 0 && !raw[j].known; j--) gapStart = j;
-        for (let j = i + 1; j < raw.length && !raw[j].known; j++) gapEnd = j;
-        const gapSize = gapEnd - gapStart + 1;
-        const t = (i - gapStart + 1) / (gapSize + 1);
-        raw[i].pos = [before[0] + (after[0] - before[0]) * t, before[1] + (after[1] - before[1]) * t];
-        raw[i].ghost = true;
-      }
+  function splitLocatedHopPositions(hopPositions) {
+    const segments = [];
+    let segment = [];
+    for (const hp of hopPositions) {
+      if (hp.pos) segment.push(hp);
+      else if (segment.length) { segments.push(segment); segment = []; }
     }
-    return raw.filter(h => h.pos != null);
+    if (segment.length) segments.push(segment);
+    return segments;
   }
 
   function animatePath(hopPositions, typeName, color, rawHex, onHop, pktMeta) {
     if (!animLayer || !pathsLayer) return;
     if (activeAnims >= MAX_CONCURRENT_ANIMS) return;
+    if (hopPositions.some(h => !h.pos)) {
+      for (const segment of splitLocatedHopPositions(hopPositions)) {
+        // Segments animate independently; do not restart the synchronized
+        // audio sequence at zero for each fragment. Normal packet audio remains.
+        if (segment.length >= 2) animatePath(segment, typeName, color, rawHex, null, pktMeta);
+        else pulseNode(segment[0].key, segment[0].pos, typeName);
+      }
+      return;
+    }
     activeAnims++;
     document.getElementById('liveAnimCount').textContent = activeAnims;
     let hopIndex = 0;

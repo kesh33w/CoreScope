@@ -40,6 +40,13 @@ type paramMeta struct {
 // Key format: "METHOD /path/pattern"
 func routeDescriptions() map[string]routeMeta {
 	return map[string]routeMeta{
+		// Bounded observation reads used by the Compare page.
+		"GET /api/observer-comparison": {Summary: "Compare stored receptions", Description: "Read-only v3 observation sample. Half-open UTC time window, at most 24h; newest 50000 site observation candidates and 10000 receptions per observer. A truncated response is not a complete comparison. Reception raw_hex is empty when not retained; no canonical frame fallback. Excludes TX reports. No experiment notes are sent to this API.", Tag: "observers", QueryParams: []paramMeta{
+			{Name: "a", Type: "string", Required: true, Description: "First observer ID"},
+			{Name: "b", Type: "string", Required: true, Description: "Different reference observer ID"},
+			{Name: "since", Type: "string", Required: true, Description: "Inclusive RFC3339 start"},
+			{Name: "until", Type: "string", Required: true, Description: "Exclusive RFC3339 end"},
+		}},
 		// Config
 		"GET /api/config/cache":              {Summary: "Get cache configuration", Tag: "config"},
 		"GET /api/config/client":             {Summary: "Get client configuration", Tag: "config"},

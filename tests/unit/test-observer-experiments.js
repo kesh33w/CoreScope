@@ -1,0 +1,23 @@
+'use strict';
+const assert = require('assert');
+const vm = require('vm');
+const fs = require('fs');
+const ctx = { window:{}, registerPage:()=>{}, Map, Set, Date, Number, URLSearchParams };
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(require('path').join(__dirname,'../../public/compare.js'),'utf8'),ctx);
+const p=(hash,raw,t,snr,path='["aa"]')=>({hash,raw_hex:raw,timestamp:t,snr,path_json:path});
+const a=[p('a','aabb',100,0),p('a','aacc',102,4,'["bb"]'),p('b','bbcc',110,null)];
+const b=[p('a','aabb',101,-3),p('a','aabb',102,1),p('b','bbcc',125,3)];
+const r=ctx.computeReceptionStats(a,b);
+assert.equal(r.a.receptions,3);assert.equal(r.a.messages,2);assert.equal(r.a.alternatePaths,1);
+assert.equal(r.paired.count,1);assert.equal(r.paired.median,3);
+assert.equal(r.b.receptions,3); // Repeated frame retained as reception, not silently discarded.
+assert.equal(ctx.computeReceptionStats([p('x','',100,4)],[p('x','',100,2)]).paired.count,0);
+assert.equal(ctx.computeReceptionStats([p('x','aa',100,null)],[p('x','aa',100,2)]).paired.count,0);
+assert.equal(ctx.computeReceptionStats([p('x','aa',100,'0')],[p('x','aa',110,'2')]).paired.median,-2);
+assert.equal(ctx.computeReceptionStats([p('x','aa',100,0)],[p('x','aa',111,2)]).paired.count,0);
+assert.equal(ctx.computeReceptionStats([],[]).paired.median,null);
+const notes=ctx.cleanExperimentNotes([{name:'test',at:'2026-11-12T10:00:00Z',a:'a',b:'b'}, {name:'bad',at:'no'}]);
+assert.equal(notes.length,1);
+assert.equal(ctx.cleanExperimentNotes(Array(70).fill(notes[0])).length,50);
+console.log('observer experiment tests passed');

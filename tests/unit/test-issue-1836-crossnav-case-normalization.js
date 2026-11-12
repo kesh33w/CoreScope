@@ -28,10 +28,10 @@ console.log('\u2500\u2500 Cross-nav case normalization (#1836) \u2500\u2500');
 const obsSrc = fs.readFileSync(path.join(REPO_ROOT, 'public', 'observer-detail.js'), 'utf8');
 const nodesSrc = fs.readFileSync(path.join(REPO_ROOT, 'public', 'nodes.js'), 'utf8');
 
-test('observer-detail.js observer→node href lowercases currentId', () => {
+test('observer-detail.js observer→node href lowercases the actual public key', () => {
   assert.ok(
-    /href="#\/nodes\/\$\{encodeURIComponent\(currentId\.toLowerCase\(\)\)\}"/.test(obsSrc),
-    'expected href="#/nodes/${encodeURIComponent(currentId.toLowerCase())}" in observer-detail.js'
+    /href="#\/nodes\/\$\{encodeURIComponent\(observerNodeKey\(currentId\)\.toLowerCase\(\)\)\}"/.test(obsSrc),
+    'expected a lowercase node public key from observerNodeKey(currentId) in observer-detail.js'
   );
 });
 

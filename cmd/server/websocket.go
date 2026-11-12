@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,12 +15,14 @@ import (
 
 // Hub manages WebSocket clients and broadcasts.
 type Hub struct {
+	telemetry      *connectionTelemetry
 	mu             sync.RWMutex
 	clients        map[*Client]bool
 	upgrader       websocket.Upgrader
 	allowedOrigins []string   // exact-match allowlist for /ws CheckOrigin (see SetAllowedOrigins)
 	limits         *wsLimiter // #1794: per-IP caps and deny list; nil allows everything
 	pingInterval   time.Duration
+	readTimeout    time.Duration
 }
 
 // SetAllowedOrigins configures the exact-match origin allowlist consulted by
@@ -81,9 +84,14 @@ var wsHeartbeat = []byte(`{"type":"heartbeat"}`)
 
 // Client is a single WebSocket connection.
 type Client struct {
-	conn      *websocket.Conn
-	send      chan []byte
-	closeOnce sync.Once
+	telemetry   *connectionTelemetry
+	telemetryID string
+	writerDone  chan struct{}
+	reasonMu    sync.Mutex
+	closeReason string
+	conn        *websocket.Conn
+	send        chan []byte
+	closeOnce   sync.Once
 	// release returns this connection's slot to the per-IP concurrent cap
 	// (#1794). Always non-nil so Unregister needs no nil check; it is a no-op
 	// when limits are disabled.
@@ -116,6 +124,7 @@ func NewHub() *Hub {
 	h := &Hub{
 		clients:      make(map[*Client]bool),
 		pingInterval: 30 * time.Second,
+		readTimeout:  60 * time.Second,
 	}
 	h.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -142,6 +151,9 @@ func (h *Hub) Unregister(c *Client) {
 	h.mu.Lock()
 	if _, ok := h.clients[c]; ok {
 		delete(h.clients, c)
+		if c.writerDone == nil {
+			c.telemetry.close(c.telemetryID, "unknown")
+		}
 		c.closeOnce.Do(func() { close(c.send) })
 	}
 	h.mu.Unlock()
@@ -158,12 +170,14 @@ func (h *Hub) Unregister(c *Client) {
 func (h *Hub) Close() {
 	h.mu.Lock()
 	for c := range h.clients {
+		c.setCloseReason("server_shutdown")
 		c.conn.WriteControl(
 			websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
 			time.Now().Add(3*time.Second),
 		)
 		c.closeOnce.Do(func() { close(c.send) })
+		c.conn.Close()
 		delete(h.clients, c)
 	}
 	h.mu.Unlock()
@@ -184,6 +198,7 @@ func (h *Hub) Broadcast(msg interface{}) {
 		case c.send <- data:
 		default:
 			// Client buffer full — drop
+			c.telemetry.activity(c.telemetryID, "drop", 0)
 		}
 	}
 }
@@ -214,9 +229,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		conn:    conn,
-		send:    make(chan []byte, 256),
-		release: release,
+		conn:        conn,
+		send:        make(chan []byte, 256),
+		release:     release,
+		telemetry:   h.telemetry,
+		telemetryID: h.telemetry.open(r),
+		writerDone:  make(chan struct{}),
 	}
 	h.Register(client)
 
@@ -235,21 +253,59 @@ func wsOrStatic(hub *Hub, static http.Handler) http.Handler {
 	})
 }
 
+// Keep the first terminal cause. Finalize only after the writer exits, so a
+// successful in-flight frame is counted before the closed snapshot is frozen.
+func (c *Client) setCloseReason(reason string) {
+	c.reasonMu.Lock()
+	defer c.reasonMu.Unlock()
+	if c.closeReason == "" {
+		c.closeReason = reason
+	}
+}
+
 func (c *Client) readPump(hub *Hub) {
 	defer func() {
 		hub.Unregister(c)
 		c.conn.Close()
+		if c.writerDone != nil {
+			<-c.writerDone
+		}
+		c.reasonMu.Lock()
+		reason := c.closeReason
+		c.reasonMu.Unlock()
+		c.telemetry.close(c.telemetryID, reason)
 	}()
+	timeout := hub.readTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	c.conn.SetReadLimit(512)
-	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.conn.SetReadDeadline(time.Now().Add(timeout))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		c.telemetry.activity(c.telemetryID, "pong", 0)
+		c.conn.SetReadDeadline(time.Now().Add(timeout))
 		return nil
 	})
 	for {
-		_, _, err := c.conn.ReadMessage()
+		messageType, data, err := c.conn.ReadMessage()
 		if err != nil {
+			reason := "read_error"
+			if e, ok := err.(net.Error); ok && e.Timeout() {
+				reason = "read_timeout"
+			}
+			if e, ok := err.(*websocket.CloseError); ok {
+				if e.Code == websocket.CloseNormalClosure {
+					reason = "normal"
+				} else if e.Code != websocket.CloseAbnormalClosure {
+					reason = "peer_closed"
+				}
+			}
+			c.setCloseReason(reason)
 			break
+		}
+		c.telemetry.activity(c.telemetryID, "read", len(data))
+		if messageType == websocket.TextMessage {
+			c.telemetry.pageReport(c.telemetryID, data)
 		}
 	}
 }
@@ -259,6 +315,9 @@ func (c *Client) writePump(pingInterval time.Duration) {
 	defer func() {
 		ticker.Stop()
 		c.conn.Close()
+		if c.writerDone != nil {
+			close(c.writerDone)
+		}
 	}()
 	for {
 		select {
@@ -269,11 +328,14 @@ func (c *Client) writePump(pingInterval time.Duration) {
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				c.setCloseReason("write_error")
 				return
 			}
+			c.telemetry.activity(c.telemetryID, "write", len(message))
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				c.setCloseReason("write_error")
 				return
 			}
 			// #1074: the ping above keeps proxies and this server's read
@@ -281,8 +343,10 @@ func (c *Client) writePump(pingInterval time.Duration) {
 			// frame the page receives, a quiet mesh and a dead socket look the
 			// same to the client, so it could not detect the latter.
 			if err := c.conn.WriteMessage(websocket.TextMessage, wsHeartbeat); err != nil {
+				c.setCloseReason("write_error")
 				return
 			}
+			c.telemetry.activity(c.telemetryID, "write", len(wsHeartbeat))
 		}
 	}
 }

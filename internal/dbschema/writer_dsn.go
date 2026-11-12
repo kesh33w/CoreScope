@@ -1,5 +1,7 @@
 package dbschema
 
+import "fmt"
+
 // WriterDSN builds the DSN every writer must open the database with.
 //
 // It lives here because this package is the one thing cmd/ingestor and
@@ -25,9 +27,25 @@ package dbschema
 //     SQLite's own default, pinned so it cannot drift: the page cache is a C
 //     allocation and therefore sits outside GOMEMLIMIT.
 func WriterDSN(path string) string {
+	return writerDSN(path, "FULL")
+}
+
+// WriterDSNWithSynchronous allows the ingestor to opt into NORMAL explicitly.
+// The default WriterDSN, also used by cmd/migrate, remains pinned to FULL.
+func WriterDSNWithSynchronous(path, synchronous string) (string, error) {
+	if synchronous == "" {
+		synchronous = "FULL"
+	}
+	if synchronous != "FULL" && synchronous != "NORMAL" {
+		return "", fmt.Errorf("invalid db.synchronous %q: must be FULL or NORMAL", synchronous)
+	}
+	return writerDSN(path, synchronous), nil
+}
+
+func writerDSN(path, synchronous string) string {
 	return path +
 		"?_journal_mode=WAL" +
-		"&_synchronous=FULL" +
+		"&_synchronous=" + synchronous +
 		"&_auto_vacuum=incremental" +
 		"&_foreign_keys=on" +
 		"&_busy_timeout=5000" +

@@ -74,7 +74,11 @@ func main() {
 
 	sources := cfg.ResolvedSources()
 
-	store, err := OpenStoreWithInterval(cfg.DBPath, cfg.MetricsSampleInterval())
+	synchronous := ""
+	if cfg.DB != nil {
+		synchronous = cfg.DB.Synchronous
+	}
+	store, err := OpenStoreWithIntervalAndSynchronous(cfg.DBPath, cfg.MetricsSampleInterval(), synchronous)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
@@ -1006,7 +1010,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 	// is region-independent and should be accepted from all observers regardless of
 	// which IATA regions are configured for packet ingestion.
 	if len(parts) >= 4 && parts[3] == "status" {
-		observerID := clampObserverField(parts[2], maxObserverIDLen)
+		observerID := observerIDForMessage(parts, msg)
 		name, _ := msg["origin"].(string)
 		name = clampObserverField(name, maxObserverTextLen)
 		iata := clampObserverField(parts[1], maxObserverIATALen)
@@ -1104,7 +1108,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		observerID := ""
 		region := ""
 		if len(parts) > 2 {
-			observerID = clampObserverField(parts[2], maxObserverIDLen)
+			observerID = observerIDForMessage(parts, msg)
 		}
 		if len(parts) > 1 {
 			region = clampObserverField(parts[1], maxObserverIATALen)
@@ -1213,7 +1217,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 			}
 			pktData := BuildPacketData(mqttMsg, decoded, observerID, region, regionSet)
 			pktData.Foreign = foreign
-			isNew, err := store.InsertTransmission(pktData)
+			isNew, err := store.InsertObservedTransmission(pktData)
 			if err != nil {
 				log.Printf("MQTT [%s] db insert error: %v", tag, err)
 			}
@@ -1247,25 +1251,8 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 			// Non-ADVERT packets: store normally (routing/channel messages from
 			// in-area observers are relevant regardless of relay hop origin).
 			pktData := BuildPacketData(mqttMsg, decoded, observerID, region, regionSet)
-			if _, err := store.InsertTransmission(pktData); err != nil {
+			if _, err := store.InsertObservedTransmission(pktData); err != nil {
 				log.Printf("MQTT [%s] db insert error: %v", tag, err)
-			}
-		}
-
-		// Upsert observer
-		if observerID != "" {
-			origin, _ := msg["origin"].(string)
-			origin = clampObserverField(origin, maxObserverTextLen)
-			// Use effective region: payload > topic > source config (#788)
-			effectiveRegion := region
-			if mqttMsg.Region != "" {
-				effectiveRegion = mqttMsg.Region
-			}
-			// Same as the status-path call above: observer.last_seen is ingest
-			// time, not envelope time. Per-packet rxTime (stored in observations
-			// via InsertTransmission) still uses envelope time. See #1465.
-			if err := store.UpsertObserverAt(observerID, origin, effectiveRegion, nil, ""); err != nil {
-				log.Printf("MQTT [%s] observer upsert error: %v", tag, err)
 			}
 		}
 

@@ -517,6 +517,7 @@ func (s *Server) buildNodeInfoMap() map[string]nodeInfo {
 				if rows.Scan(&id, &name) != nil {
 					continue
 				}
+				id = observerPublicKey(id)
 				key := strings.ToLower(id)
 				if _, exists := m[key]; !exists {
 					m[key] = nodeInfo{PublicKey: id, Name: name, Role: "observer"}

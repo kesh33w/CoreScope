@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -51,5 +52,61 @@ func TestOpenStorePragmas(t *testing.T) {
 		if got != want.value {
 			t.Errorf("PRAGMA %s = %q, want %q (%s)", want.pragma, got, want.value, want.why)
 		}
+	}
+}
+
+func TestOpenStoreSynchronousOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, want string
+	}{
+		{"empty_defaults_full", "", "2"},
+		{"explicit_full", "FULL", "2"},
+		{"explicit_normal", "NORMAL", "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := OpenStoreWithIntervalAndSynchronous(filepath.Join(t.TempDir(), "pragma.db"), 300, tc.mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			var got string
+			if err := store.db.QueryRow("PRAGMA synchronous").Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("synchronous=%s for mode %q, want %s", got, tc.mode, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenStoreRejectsInvalidSynchronous(t *testing.T) {
+	for _, mode := range []string{"OFF", "EXTRA", "normal", "FULL;PRAGMA foreign_keys=OFF"} {
+		if store, err := OpenStoreWithIntervalAndSynchronous(filepath.Join(t.TempDir(), "pragma.db"), 300, mode); err == nil {
+			store.Close()
+			t.Fatalf("accepted invalid synchronous mode %q", mode)
+		}
+	}
+}
+
+func TestConfiguredSynchronousNormal(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"db":{"synchronous":"NORMAL"}}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DB == nil {
+		t.Fatal("missing database configuration")
+	}
+	store, err := OpenStoreWithIntervalAndSynchronous(filepath.Join(t.TempDir(), "configured.db"), cfg.MetricsSampleInterval(), cfg.DB.Synchronous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var mode int
+	if err := store.db.QueryRow("PRAGMA synchronous").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != 1 {
+		t.Fatalf("configured writer uses synchronous=%d, want NORMAL=1", mode)
 	}
 }
