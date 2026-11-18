@@ -86,3 +86,40 @@ func TestObserverFrequencySaveFollowsSymlink(t *testing.T) {
 		t.Fatal("target not updated")
 	}
 }
+
+func TestObserverFrequencyMultipleRegionsAndRemoval(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "config.json")
+	os.WriteFile(p, []byte(`{"keep":"unchanged"}`), 0600)
+	s := &Server{configDir: d}
+	for _, body := range []string{
+		`{"rules":{"SMF":{"mhz":909.875},"SFO":{"mhz":910.525},"LHR":{"mhz":869.525,"dropUnknown":true}}}`,
+		`{"rules":{"SMF":{"mhz":909.875},"LHR":{"mhz":869.525,"dropUnknown":true}}}`,
+	} {
+		w := httptest.NewRecorder()
+		s.handlePutObserverFrequency(w, httptest.NewRequest("PUT", "/", strings.NewReader(body)))
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		var expected struct {
+			Rules map[string]observerFrequencyRule `json:"rules"`
+		}
+		json.Unmarshal([]byte(body), &expected)
+		r := httptest.NewRecorder()
+		s.handleGetObserverFrequency(r, httptest.NewRequest("GET", "/", nil))
+		var actual observerFrequencyConfigResponse
+		json.Unmarshal(r.Body.Bytes(), &actual)
+		if len(actual.Rules) != len(expected.Rules) {
+			t.Fatal(actual.Rules)
+		}
+		for region, rule := range expected.Rules {
+			if actual.Rules[region] != rule {
+				t.Fatal(region, actual.Rules)
+			}
+		}
+		b, _ := os.ReadFile(p)
+		if !strings.Contains(string(b), `"keep": "unchanged"`) {
+			t.Fatal("lost unrelated config")
+		}
+	}
+}

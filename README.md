@@ -1,6 +1,6 @@
 # CoreScope
 
-**New: observer frequency filtering.** Drop SMF receptions reported on frequencies other than 909.875 MHz before they enter analytics. Configure it in Customization → Frequency; unknown/stale metadata handling is explicit. [Behavior and limits](OBSERVER_FREQUENCY_FILTER.md).
+**New: observer frequency filtering.** Define independent expected receiver frequencies for any IATA region before observations enter analytics. Add, edit, or remove multiple rules in Customization → Frequency, with per-region tolerance and unknown/stale metadata handling. [Behavior and limits](OBSERVER_FREQUENCY_FILTER.md).
 
 This is the SacMesh fork of [upstream CoreScope](https://github.com/Kpa-clawbot/CoreScope), based on v3.17.0. The fork release is `v3.17.0+sacmesh.1`. See [fork maintenance](docs/fork-maintenance.md) for the retained changes and upgrade checks. Badges below report upstream CI, not this fork's validation.
 

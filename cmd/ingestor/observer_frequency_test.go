@@ -133,3 +133,24 @@ func TestFrequencyFeedCaseAndSourceIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestObserverFrequencyIndependentRegionPolicies(t *testing.T) {
+	now := time.Now().UTC()
+	c := &Config{ObserverFrequencyRules: map[string]ObserverFrequencyRule{
+		"SMF": {MHz: 909.875}, "SFO": {MHz: 910.525}, "LHR": {MHz: 869.525, DropUnknown: true},
+	}}
+	for _, tc := range []struct{ region, radio, want string }{
+		{"SMF", "909.875", ""}, {"SMF", "910.525", "mismatch"},
+		{"SFO", "910.525", ""}, {"SFO", "909.875", "mismatch"},
+		{"LHR", "869.525", ""}, {"LHR", "", "unknown"},
+		{"JFK", "869.525", ""}, {"JFK", "", ""},
+	} {
+		if got := c.observerFrequencyDecision("broker", []string{"meshcore", tc.region, "same-observer", "packets"}, map[string]interface{}{"radio": tc.radio}, now); got != tc.want {
+			t.Fatalf("%s/%s: got %q want %q", tc.region, tc.radio, got, tc.want)
+		}
+	}
+	delete(c.ObserverFrequencyRules, "LHR")
+	if got := c.observerFrequencyDecision("broker", []string{"meshcore", "LHR", "same-observer"}, nil, now); got != "" {
+		t.Fatal("removed region should no longer filter", got)
+	}
+}
