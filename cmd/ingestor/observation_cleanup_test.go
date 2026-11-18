@@ -104,6 +104,15 @@ func TestObservationCleanupBulkPreservesSharedAndRestores(t *testing.T) {
 	if e = s.db.QueryRow("PRAGMA integrity_check").Scan(&ok); e != nil || ok != "ok" {
 		t.Fatalf("integrity %s %v", ok, e)
 	}
+	fk, e := s.db.Query("PRAGMA foreign_key_check")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer fk.Close()
+	if fk.Next() {
+		t.Fatal("foreign key violation after restore")
+	}
+
 }
 func TestObservationCleanupArchiveFailureNoDeletion(t *testing.T) {
 	s := cleanupTestStore(t)
