@@ -1,5 +1,7 @@
 # CoreScope
 
+**New: observer frequency filtering.** Drop SMF receptions reported on frequencies other than 909.875 MHz before they enter analytics. Configure it in Customization → Frequency; unknown/stale metadata handling is explicit. [Behavior and limits](OBSERVER_FREQUENCY_FILTER.md).
+
 This is the SacMesh fork of [upstream CoreScope](https://github.com/Kpa-clawbot/CoreScope), based on v3.17.0. The fork release is `v3.17.0+sacmesh.1`. See [fork maintenance](docs/fork-maintenance.md) for the retained changes and upgrade checks. Badges below report upstream CI, not this fork's validation.
 
 [![Go Server Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/go-server-coverage.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)

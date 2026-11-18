@@ -55,6 +55,8 @@ func routeDescriptions() map[string]routeMeta {
 		"GET /api/config/theme":              {Summary: "Get theme configuration", Description: "Returns color maps, CSS variables, and theme defaults.", Tag: "config"},
 		"GET /api/config/map":                {Summary: "Get map configuration", Tag: "config"},
 		"GET /api/config/geo-filter":         {Summary: "Get geo-filter configuration", Tag: "config"},
+		"GET /api/config/observer-frequency": {Summary: "Get saved observer frequency policy", Description: "Returns rules keyed by three-letter region, writeEnabled, and restartRequired. Saved configuration is not proof of current ingestor state.", Tag: "config"},
+		"PUT /api/config/observer-frequency": {Summary: "Save observer frequency policy", Description: "Accepts {rules:{SMF:{mhz:909.875,toleranceKHz:0.5,maxStatusAgeSec:1800,dropUnknown:false}}}. Replaces the frequency rules only. An ingestor restart is required. Does not delete historical observations.", Tag: "config", Auth: true, Session: true},
 
 		// Admin / system
 		"GET /api/health":      {Summary: "Health check", Description: "Returns server health, uptime, and memory stats.", Tag: "admin"},

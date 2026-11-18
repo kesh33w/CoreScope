@@ -18,6 +18,7 @@ import (
 
 // MQTTSource represents a single MQTT broker connection.
 type MQTTSource struct {
+	frequencySourceID  string   // runtime-only unique subscription identity
 	Name               string   `json:"name"`
 	Broker             string   `json:"broker"`
 	Username           string   `json:"username,omitempty"`
@@ -98,6 +99,13 @@ type Config struct {
 	// Messages from blacklisted observers are silently discarded â€” no DB writes,
 	// no UpsertObserver, no observations, no metrics.
 	ObserverBlacklist []string `json:"observerBlacklist,omitempty"`
+
+	// ObserverFrequencyRules rejects incompatible reception frequencies before packet writes.
+	ObserverFrequencyRules map[string]ObserverFrequencyRule `json:"observerFrequencyRules,omitempty"`
+	frequencyMu            sync.Mutex
+	frequencyStates        map[observerFrequencyKey]observerFrequencyState
+	frequencyWarnings      map[string]time.Time
+	frequencySweep         time.Time
 
 	// obsBlacklistSetCached is the lazily-built lowercase set for O(1) lookups.
 	obsBlacklistSetCached map[string]bool
@@ -630,6 +638,9 @@ func LoadConfig(path string) (*Config, error) {
 		log.Printf("no MQTT sources configured, defaulting to mqtt://localhost:1883")
 	}
 
+	if err := cfg.validateFrequencyRules(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
