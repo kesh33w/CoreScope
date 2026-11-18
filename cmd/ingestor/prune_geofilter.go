@@ -68,6 +68,7 @@ func (s *Store) DeleteNodesByPubkeys(pubkeys []string) (int64, error) {
 //
 // Safe to call from a ticker — no-op when the queue is empty.
 func (s *Store) RunPendingPruneRequests() {
+	s.RunPendingObservationCleanups()
 	paths, err := prunequeue.ListPending(s.path)
 	if err != nil {
 		log.Printf("[prune-queue] list pending failed: %v", err)

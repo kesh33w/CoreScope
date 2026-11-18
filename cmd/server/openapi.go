@@ -40,6 +40,11 @@ type paramMeta struct {
 // Key format: "METHOD /path/pattern"
 func routeDescriptions() map[string]routeMeta {
 	return map[string]routeMeta{
+		"GET /api/admin/observation-cleanup/capabilities": {Summary: "Get historical cleanup capabilities", Tag: "admin"},
+		"POST /api/admin/observation-cleanup/preview":     {Summary: "Preview scoped historical observation cleanup", Description: "Counts an exact observer selection and fixes its timestamp and observation ID cutoff. Historical radio frequency is not inferred.", Tag: "admin", Auth: true, Session: true},
+		"POST /api/admin/observation-cleanup":             {Summary: "Queue recoverable bulk observation cleanup", Description: "Requires the preview selection and expected count. Only the ingestor writes measurement data. A server restart is required to refresh in-memory analytics.", Tag: "admin", Auth: true, Session: true},
+		"POST /api/admin/observation-cleanup/restore":     {Summary: "Queue archived observation restore", Tag: "admin", Auth: true, Session: true},
+		"GET /api/admin/observation-cleanup/status":       {Summary: "Get cleanup or restore job status", Tag: "admin", Auth: true, Session: true},
 		// Bounded observation reads used by the Compare page.
 		"GET /api/observer-comparison": {Summary: "Compare stored receptions", Description: "Read-only v3 observation sample. Half-open UTC time window, at most 24h; newest 50000 site observation candidates and 10000 receptions per observer. A truncated response is not a complete comparison. Reception raw_hex is empty when not retained; no canonical frame fallback. Excludes TX reports. No experiment notes are sent to this API.", Tag: "observers", QueryParams: []paramMeta{
 			{Name: "a", Type: "string", Required: true, Description: "First observer ID"},

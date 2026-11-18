@@ -1,0 +1,12 @@
+'use strict';
+const assert = require('assert');
+const ui = require('../../public/observation-cleanup.js');
+assert.deepStrictEqual(ui.selectionFromValues(' ABC ', 'smf', '', ''), {observerId:'ABC',iata:'SMF',from:0,to:0});
+assert.throws(()=>ui.selectionFromValues('','SMF','',''));
+assert.throws(()=>ui.selectionFromValues('ABC','SMFX','',''));
+assert.throws(()=>ui.selectionFromValues('ABC','','not-a-date',''));
+assert.throws(()=>ui.selectionFromValues('ABC','','2026-12-01T00:00','2026-11-01T00:00'));
+const s=ui.selectionFromValues('ABC','','2026-11-01T00:00','2026-12-01T00:00');assert(s.to>s.from&&Number.isInteger(s.from));
+assert(ui.render(true).includes('Historical frequency'));
+assert(ui.render(true).includes('Node registry'));
+console.log('observation cleanup selection tests passed');
