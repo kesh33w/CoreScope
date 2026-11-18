@@ -1154,6 +1154,14 @@
       '.cust-panel{display:none;padding:12px 16px}',
       '.cust-panel.active{display:block}',
       '.cust-field{margin-bottom:12px}',
+      '[data-panel="frequency"] input[type="number"],[data-panel="frequency"] input[type="password"]{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--input-bg);color:var(--text);box-sizing:border-box}',
+      '[data-panel="frequency"] button{padding:7px 12px;margin:4px 4px 4px 0;background:var(--surface-1);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px}',
+      '[data-panel="frequency"] button:disabled{opacity:.5;cursor:default}',
+      '[data-panel="frequency"] #cv2-freq-save{background:var(--accent);color:#fff}',
+      '[data-panel="frequency"] .cv2-freq-remove{color:var(--status-red)}',
+      '[data-panel="frequency"] p{font-size:12px;line-height:1.5;margin:8px 0}',
+      '[data-panel="frequency"] legend{font-size:12px;font-weight:600}',
+
       '.cust-field label{display:block;font-size:12px;font-weight:600;margin-bottom:3px;color:var(--text)}',
       '.cust-field input[type="text"],.cust-field textarea{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--input-bg);color:var(--text);box-sizing:border-box}',
       '.cust-field input[type="text"]:focus,.cust-field textarea:focus{outline:none;border-color:var(--accent)}',
@@ -1752,17 +1760,15 @@
 
   function _renderFrequencyFilter() {
     return '<div class="cust-panel' + (_activeTab === 'frequency' ? ' active' : '') + '" data-panel="frequency">' +
-      '<p class="cust-section-title">Observer frequency filter</p>' +
-      '<p>Drop SMF observations whose reported receiver frequency is not 909.875 MHz. Status reports are retained so retuning can be detected. Historical data is not removed.</p>' +
+      '<p class="cust-section-title">Observer frequency filters</p>' +
+      '<p>Choose the expected receiver frequency for each three-letter observer region. Only configured regions are filtered. Status reports remain available for retuning; historical data is not removed.</p>' +
       '<p id="cv2-freq-status" role="status">Loading saved policy…</p>' +
       '<fieldset id="cv2-freq-fields" disabled style="border:0;padding:0">' +
-      '<label><input id="cv2-freq-enabled" type="checkbox"> Enable SMF frequency filter</label>' +
-      '<div class="cust-field"><label for="cv2-freq-mhz">Expected frequency (MHz)</label><input id="cv2-freq-mhz" type="number" min="100" max="2500" step="0.001" value="909.875"></div>' +
-      '<div class="cust-field"><label for="cv2-freq-tolerance">Tolerance (kHz)</label><input id="cv2-freq-tolerance" type="number" min="0.001" max="100" step="0.001" value="0.5"></div>' +
-      '<div class="cust-field"><label for="cv2-freq-age">Maximum status age (seconds)</label><input id="cv2-freq-age" type="number" min="1" max="86400" step="1" value="1800"></div>' +
-      '<label><input id="cv2-freq-unknown" type="checkbox"> Also drop missing or stale frequency information</label><p>When unchecked, missing or stale frequency information is accepted; only known mismatches are dropped.</p>' +
+      '<div id="cv2-freq-rules"></div><button id="cv2-freq-add" type="button">Add region</button> ' +
+      '<button id="cv2-freq-reset" type="button">Discard unsaved changes</button>' +
+      '<p>Missing or stale frequency information is accepted unless a rule’s strict option is checked. Removing a rule disables filtering for that region after saving and restarting.</p>' +
       '<div class="cust-field"><label for="cv2-freq-key">Server API key (not needed when signed in as admin)</label><input id="cv2-freq-key" type="password" autocomplete="off"></div>' +
-      '<button id="cv2-freq-save">Save to server</button></fieldset>' +
+      '<button id="cv2-freq-save" type="button">Save to server</button></fieldset>' +
       '<p><strong>Restart required:</strong> saving changes config.json only. Restart the ingestor to apply it. The controls show saved settings, not verified running state.</p></div>';
   }
 
@@ -1770,25 +1776,78 @@
     var status = container.querySelector('#cv2-freq-status');
     var fields = container.querySelector('#cv2-freq-fields');
     var button = container.querySelector('#cv2-freq-save');
-    if (!status || !button) return;
+    var list = container.querySelector('#cv2-freq-rules');
+    var add = container.querySelector('#cv2-freq-add');
+    if (!status || !button || !list) return;
     var rules = null;
+    var sequence = 0;
+    function dirty() { status.textContent = 'Unsaved changes. Save, then restart the ingestor to apply them.'; }
+    function row(region, rule) {
+      var box = document.createElement('fieldset');
+      box.className = 'cv2-freq-rule';
+      box.style.cssText = 'border:1px solid var(--border);padding:10px;margin:10px 0';
+      var legend = document.createElement('legend');
+      legend.textContent = 'Region frequency rule'; box.appendChild(legend);
+      function input(name, label, value, type, attrs) {
+        var wrap = document.createElement('div'); wrap.className = 'cust-field';
+        var el = document.createElement('input'); el.type = type;
+        el.id = 'cv2-freq-rule-' + (++sequence); el.dataset.field = name;
+        if (type === 'checkbox') el.checked = !!value; else el.value = value;
+        Object.keys(attrs || {}).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+        var lab = document.createElement('label'); lab.htmlFor = el.id; lab.textContent = label;
+        wrap.appendChild(lab); wrap.appendChild(el); box.appendChild(wrap);
+      }
+      input('region', 'Region (three letters, e.g. SMF)', region, 'text', { maxlength: 3, pattern: '[A-Za-z]{3}', autocomplete: 'off' });
+      input('mhz', 'Expected frequency (MHz)', rule.mhz === undefined ? '' : rule.mhz, 'number', { min: 100, max: 2500, step: 'any' });
+      input('toleranceKHz', 'Tolerance (kHz)', rule.toleranceKHz || 0.5, 'number', { min: 0.001, max: 100, step: 'any' });
+      input('maxStatusAgeSec', 'Maximum status age (seconds)', rule.maxStatusAgeSec || 1800, 'number', { min: 1, max: 86400, step: 1 });
+      input('dropUnknown', 'Strict: also drop missing or stale frequency information', rule.dropUnknown, 'checkbox');
+      var remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Remove region'; remove.className = 'cv2-freq-remove';
+      remove.addEventListener('click', function () { box.remove(); add.disabled = false; dirty(); });
+      box.appendChild(remove); list.appendChild(box);
+      add.disabled = list.children.length >= 64;
+    }
+    function renderSaved() {
+      list.replaceChildren();
+      Object.keys(rules).sort().forEach(function (region) { row(region, rules[region]); });
+      add.disabled = list.children.length >= 64;
+    }
+    list.addEventListener('input', dirty);
+    add.addEventListener('click', function () {
+      if (list.children.length >= 64) return;
+      row('', {}); dirty(); list.lastElementChild.querySelector('input').focus();
+    });
+    container.querySelector('#cv2-freq-reset').addEventListener('click', function () {
+      if (!rules) return;
+      renderSaved(); status.textContent = 'Restored saved policy. Running state is not confirmed here.';
+    });
     fetch('/api/config/observer-frequency', { cache: 'no-store' }).then(function (response) {
       if (!response.ok) throw new Error('HTTP ' + response.status);
       return response.json();
     }).then(function (data) {
       if (!status.isConnected) return;
-      rules = data.rules || {};
-      var rule = rules.SMF;
-      container.querySelector('#cv2-freq-enabled').checked = !!rule;
-      container.querySelector('#cv2-freq-mhz').value = rule ? rule.mhz : 909.875;
-      container.querySelector('#cv2-freq-tolerance').value = rule && rule.toleranceKHz || 0.5;
-      container.querySelector('#cv2-freq-age').value = rule && rule.maxStatusAgeSec || 1800;
-      container.querySelector('#cv2-freq-unknown').checked = !!(rule && rule.dropUnknown);
-      fields.disabled = false;
-      status.textContent = 'Saved policy: ' + (rule ? 'SMF filter ON.' : 'SMF filter OFF.') + ' Running state is not confirmed here.';
+      rules = data.rules || {}; renderSaved(); fields.disabled = false;
+      status.textContent = 'Saved policy: ' + Object.keys(rules).length + ' region rule(s). Running state is not confirmed here.';
     }).catch(function (error) { status.textContent = 'Could not load policy: ' + error.message; });
     button.addEventListener('click', function () {
-      if (!rules || button.disabled) return;
+      if (!rules || fields.disabled) return;
+      var next = Object.create(null);
+      var boxes = list.querySelectorAll('.cv2-freq-rule');
+      for (var i = 0; i < boxes.length; i++) {
+        var box = boxes[i];
+        function value(name) { return box.querySelector('[data-field="' + name + '"]').value; }
+        var region = value('region').trim().toUpperCase();
+        var mhz = Number(value('mhz'));
+        var tolerance = Number(value('toleranceKHz'));
+        var age = Number(value('maxStatusAgeSec'));
+        if (!/^[A-Z]{3}$/.test(region) || Object.prototype.hasOwnProperty.call(next, region)) {
+          status.textContent = 'Each region must be three letters and appear only once.'; return;
+        }
+        if (!Number.isFinite(mhz) || mhz < 100 || mhz > 2500 || !Number.isFinite(tolerance) || tolerance <= 0 || tolerance > 100 || !Number.isInteger(age) || age < 1 || age > 86400) {
+          status.textContent = region + ': enter valid frequency, tolerance and status age values.'; return;
+        }
+        next[region] = { mhz: mhz, toleranceKHz: tolerance, maxStatusAgeSec: age, dropUnknown: box.querySelector('[data-field="dropUnknown"]').checked };
+      }
       var headers = { 'Content-Type': 'application/json' };
       if (window.CSAuth && window.CSAuth.isAdmin()) Object.assign(headers, window.CSAuth.adminHeaders());
       else {
@@ -1796,24 +1855,14 @@
         if (!key) { status.textContent = 'Sign in as an admin or enter the server API key.'; return; }
         headers['X-API-Key'] = key;
       }
-      var next = Object.assign({}, rules);
-      if (container.querySelector('#cv2-freq-enabled').checked) {
-        var mhz = Number(container.querySelector('#cv2-freq-mhz').value);
-        var tolerance = Number(container.querySelector('#cv2-freq-tolerance').value);
-        var age = Number(container.querySelector('#cv2-freq-age').value);
-        if (!Number.isFinite(mhz) || mhz < 100 || mhz > 2500 || !Number.isFinite(tolerance) || tolerance <= 0 || tolerance > 100 || !Number.isInteger(age) || age < 1 || age > 86400) {
-          status.textContent = 'Enter valid frequency, tolerance and status age values.'; return;
-        }
-        next.SMF = { mhz: mhz, toleranceKHz: tolerance, maxStatusAgeSec: age, dropUnknown: container.querySelector('#cv2-freq-unknown').checked };
-      } else delete next.SMF;
-      button.disabled = true;
+      fields.disabled = true;
       fetch('/api/config/observer-frequency', { method: 'PUT', headers: headers, body: JSON.stringify({ rules: next }) }).then(function (response) {
         return response.json().then(function (data) { if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status)); return data; });
       }).then(function (data) {
-        rules = data.rules;
+        rules = data.rules; renderSaved();
         status.textContent = 'Saved. Restart the ingestor to apply this policy; it is not active merely because it was saved.';
         container.querySelector('#cv2-freq-key').value = '';
-      }).catch(function (error) { status.textContent = 'Save failed: ' + error.message; }).finally(function () { button.disabled = false; });
+      }).catch(function (error) { status.textContent = 'Save failed: ' + error.message; }).finally(function () { fields.disabled = false; });
     });
   }
 
