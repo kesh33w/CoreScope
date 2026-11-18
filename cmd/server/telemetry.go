@@ -346,7 +346,7 @@ func (t *connectionTelemetry) close(id, reason string) {
 		return
 	}
 	switch reason {
-	case "normal", "peer_closed", "read_timeout", "read_error", "write_error", "server_shutdown":
+	case "operator_block", "normal", "peer_closed", "read_timeout", "read_error", "write_error", "server_shutdown":
 	default:
 		reason = "unknown"
 	}

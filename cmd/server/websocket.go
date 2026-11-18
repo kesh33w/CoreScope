@@ -15,6 +15,7 @@ import (
 
 // Hub manages WebSocket clients and broadcasts.
 type Hub struct {
+	control        *operatorControl
 	telemetry      *connectionTelemetry
 	mu             sync.RWMutex
 	clients        map[*Client]bool
@@ -86,6 +87,7 @@ var wsHeartbeat = []byte(`{"type":"heartbeat"}`)
 
 // Client is a single WebSocket connection.
 type Client struct {
+	operatorIP  string
 	telemetry   *connectionTelemetry
 	telemetryID string
 	writerDone  chan struct{}
@@ -207,6 +209,17 @@ func (h *Hub) Broadcast(msg interface{}) {
 
 // ServeWS handles the WebSocket upgrade and runs the client.
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
+	var operatorIP string
+	if h.control != nil {
+		ip, allowed, done := h.control.admit(r)
+		if !allowed {
+			http.Error(w, "websocket upgrade refused", http.StatusForbidden)
+			return
+		}
+		defer done()
+		operatorIP = ip
+	}
+
 	// #1794: decide BEFORE the upgrade. Rejecting afterwards would already
 	// have allocated the connection and completed the handshake, which is the
 	// resource this is meant to protect.
@@ -231,6 +244,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
+		operatorIP:  operatorIP,
 		conn:        conn,
 		send:        make(chan []byte, 256),
 		release:     release,

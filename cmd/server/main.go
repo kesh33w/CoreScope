@@ -91,6 +91,9 @@ func main() {
 		dbPath           string
 		publicDir        string
 		pollMs           int
+		operatorSocket   string
+		operatorPolicy   string
+		operatorUID      uint
 		telemetryTrusted string
 		telemetrySocket  string
 		telemetrySource  string
@@ -101,6 +104,9 @@ func main() {
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (overrides config/env)")
 	flag.StringVar(&publicDir, "public", "public", "Directory to serve static files from")
 	flag.IntVar(&pollMs, "poll-ms", 1000, "SQLite poll interval for WebSocket broadcast (ms)")
+	flag.StringVar(&operatorSocket, "operator-control-socket", "", "Private operator control Unix socket; disabled by default")
+	flag.StringVar(&operatorPolicy, "operator-control-policy", "", "Private persistent operator policy JSON path")
+	flag.UintVar(&operatorUID, "operator-control-uid", 0, "Exact authorized Unix peer UID; default root")
 	flag.StringVar(&telemetrySocket, "telemetry-socket", "", "Private opt-in Unix socket path (disabled by default)")
 	flag.StringVar(&telemetrySource, "telemetry-source", "corescope", "Private telemetry service label")
 	flag.StringVar(&telemetryTrusted, "telemetry-trusted-proxies", "", "Telemetry-only trusted XFF proxies (verified sanitizing chain required)")
@@ -380,6 +386,24 @@ func main() {
 			log.Fatalf("private telemetry: %v", err)
 		}
 		defer telemetryServer.Close()
+	}
+	if operatorSocket != "" {
+		if uint64(operatorUID) > uint64(^uint32(0)) {
+			log.Fatal("invalid operator UID")
+		}
+		control, err := newOperatorControl(hub, operatorPolicy)
+		if err != nil {
+			log.Fatal(err)
+		}
+		operatorServer, err := startOperatorControl(operatorSocket, control, uint32(operatorUID))
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer operatorServer.Close()
+		hub.control = control
+		hub.upgrader.HandshakeTimeout = 2 * time.Second
+	} else if operatorPolicy != "" {
+		log.Fatal("operator policy requires control socket")
 	}
 	hub.SetAllowedOrigins(cfg.CORSAllowedOrigins)
 	hub.ConfigureLimits(cfg.WSMaxConnsPerIP(), cfg.WSUpgradesPerMinPerIP(),
