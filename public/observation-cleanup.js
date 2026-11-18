@@ -6,13 +6,14 @@
   function render(active) {
     return '<div class="cust-panel' + (active ? ' active' : '') + '" data-panel="cleanup">' +
       '<p class="cust-section-title">Delete bad observations in bulk</p>' +
-      '<p>Select an exact observer and optional time range. Preview thousands of matching observations at once, then remove that snapshot with a recoverable archive. Other observers’ observations are preserved.</p>' +
-      '<p><strong>Historical frequency is not recorded reliably.</strong> An observer’s current region or radio setting does not prove the frequency of an old observation. Select the known affected observer and period; do not assume every observation is bad.</p>' +
+      '<p>Find an observer, preview matching history, then delete it in one recoverable bulk operation.</p>' +
+      '<div class="cust-field"><label for="cleanup-search">Find observer by name or ID</label><input id="cleanup-search" type="search" maxlength="128" placeholder="For example, AB0OO" autocomplete="off"></div>' +
+      '<p id="cleanup-search-status" role="status"></p><div id="cleanup-results"></div>' +
+      '<p id="cleanup-selected" aria-live="polite">No observer selected.</p>' +
+      '<details><summary>Advanced: enter an exact observer ID</summary><div class="cust-field"><label for="cleanup-observer">Exact observer ID</label><input id="cleanup-observer" type="text" maxlength="256" autocomplete="off"></div></details>' +
       '<p id="cleanup-status" role="status">Loading cleanup availability…</p>' +
       '<fieldset id="cleanup-fields" disabled style="border:0;padding:0">' +
-      '<div class="cust-field"><label for="cleanup-observer">Exact observer ID (not display name)</label><input id="cleanup-observer" type="text" maxlength="256" autocomplete="off"></div>' +
       '<div class="cust-field"><label for="cleanup-iata">Current observer IATA (optional)</label><input id="cleanup-iata" type="text" maxlength="3" placeholder="SMF"></div>' +
-      '<p>Region is matched against the observer’s current metadata, not its historical region or measured RF frequency.</p>' +
       '<div class="cust-field"><label for="cleanup-from">From (local time, optional)</label><input id="cleanup-from" type="datetime-local"></div>' +
       '<div class="cust-field"><label for="cleanup-to">To (local time, optional)</label><input id="cleanup-to" type="datetime-local"></div>' +
       '<div class="cust-field"><label for="cleanup-key">Server API key (or sign in as admin)</label><input id="cleanup-key" type="password" autocomplete="off"></div>' +
@@ -22,11 +23,12 @@
       '<p id="cleanup-job"></p>' +
       '<div class="cust-field"><label for="cleanup-restore-id">Cleanup request ID to restore</label><input id="cleanup-restore-id" type="text" maxlength="64" autocomplete="off"></div>' +
       '<button id="cleanup-check">Check request status</button> <button id="cleanup-restore">Restore archived observations</button>' +
-      '</fieldset><p>Node registry entries, lifetime aggregates and shared advert-route evidence remain. Archives occupy disk until separately managed. This removes selected observation history, not all records naming a node.</p><p>Deleting history does not block new observations. Keep the observer blacklist or frequency filter enabled if new bad data must be rejected.</p></div>';
+      '</fieldset><details><summary>What this removes and important limits</summary><p><strong>Historical frequency is not recorded reliably.</strong> Current region or radio settings do not prove an old observation’s frequency. Choose the known affected observer and period. The IATA filter uses current observer metadata.</p><p>Other observers’ observations are preserved. Node registry entries, lifetime aggregates and shared advert-route evidence remain. Archives occupy disk until separately managed.</p><p>Restart all CoreScope servers reading this database after deletion or restoration to refresh in-memory history. Deleting history does not block new observations; retain the appropriate blacklist or frequency filter.</p></details></div>';
+
   }
   function selectionFromValues(observer, iata, from, to) {
     observer = observer.trim(); iata = iata.trim().toUpperCase();
-    if (!observer) throw new Error('Enter the exact observer ID.');
+    if (!observer) throw new Error('Find and select an observer, or enter its exact ID under Advanced.');
     if (iata && !/^[A-Z]{3}$/.test(iata)) throw new Error('IATA must contain three letters.');
     function epoch(value) { if (!value) return 0; var n = Date.parse(value); if (!Number.isFinite(n)) throw new Error('Enter valid date/time values.'); return Math.floor(n / 1000); }
     var start = epoch(from), end = epoch(to);
@@ -41,8 +43,8 @@
     var q = function (id) { return container.querySelector('#cleanup-' + id); };
     var status = q('status'), fields = q('fields');
     if (!status || !fields) return;
-    var controller = new AbortController(), timer = null, disposed = false, busy = false, snapshot = null, revision = 0;
-    activeDispose = function () { disposed = true; controller.abort(); clearTimeout(timer); var key = q('key'); if (key) key.value = ''; };
+    var controller = new AbortController(), timer = null, disposed = false, busy = false, snapshot = null, revision = 0, searchTimer = null, searchRevision = 0;
+    activeDispose = function () { disposed = true; controller.abort(); clearTimeout(timer); clearTimeout(searchTimer); var key = q('key'); if (key) key.value = ''; };
     function live() { return !disposed && status.isConnected; }
     function say(s) { if (live()) status.textContent = s; }
     function params() { return new URLSearchParams((root.location.hash.split('?')[1] || '')); }
@@ -51,6 +53,7 @@
       var path = root.location.hash.split('?')[0] || '#/home'; root.history.replaceState(null, '', path + (p.toString() ? '?' + p.toString() : ''));
     }
     var p = params(); ['observer','iata','from','to'].forEach(function (k) { q(k).value = p.get('cleanup_' + k) || ''; });
+    if (q('observer').value) q('selected').textContent = 'Selected observer ID: ' + q('observer').value;
     var previousJob = p.get('cleanup_job') || lastJob();
     q('restore-id').value = previousJob;
     function headers() {
@@ -67,7 +70,33 @@
     function setBusy(v) { busy = v; if (!live()) return; q('preview').disabled = v; q('delete').disabled = v; q('restore').disabled = v; q('check').disabled = v; }
     function fail(err) { if (err.name !== 'AbortError') say(err.message); }
     function clearSnapshot() { revision++; snapshot = null; q('summary').textContent = ''; q('delete').hidden = true; }
-    ['observer','iata','from','to'].forEach(function (k) { q(k).addEventListener('input', function () { clearSnapshot(); var values = {}; values['cleanup_' + k] = q(k).value; setParams(values); }); });
+    ['observer','iata','from','to'].forEach(function (k) { q(k).addEventListener('input', function () { clearSnapshot(); if (k === 'observer') q('selected').textContent = q(k).value ? 'Selected observer ID: ' + q(k).value : 'No observer selected.'; var values = {}; values['cleanup_' + k] = q(k).value; setParams(values); }); });
+    function findObservers() {
+      var query = q('search').value.trim(), version = ++searchRevision;
+      q('results').replaceChildren();
+      if (query.length < 2) { q('search-status').textContent = 'Enter at least two characters. Search includes blocked observers and retained history.'; return; }
+      q('search-status').textContent = 'Finding observers…';
+      request('/observers?q=' + encodeURIComponent(query), 'GET', null, false).then(function (data) {
+        if (!live() || version !== searchRevision) return;
+        var rows = data.observers || [];
+        q('search-status').textContent = rows.length ? rows.length + ' matches' + (data.truncated ? '; refine your search to see more.' : '.') : 'No matching observers in retained history.';
+        rows.forEach(function (observer) {
+          var button = document.createElement('button'); button.type = 'button';
+          button.style.cssText = 'display:block;text-align:left;width:100%;margin-bottom:6px;overflow-wrap:anywhere;white-space:normal';
+          var label = (observer.name || 'Unnamed observer') + ' · ' + (observer.iata || 'Unknown region') + ' · ' + Number(observer.observations || 0).toLocaleString() + ' observations' + (observer.blocked ? ' · Blocked' : '') + ' · ID: ' + observer.id;
+          button.textContent = label;
+          button.addEventListener('click', function () {
+            clearSnapshot(); q('observer').value = observer.id;
+            q('selected').textContent = 'Selected: ' + label;
+            setParams({cleanup_observer:observer.id});
+            q('results').replaceChildren(); q('search-status').textContent = 'Observer selected. Set an optional time range, then preview.';
+          });
+          q('results').appendChild(button);
+        });
+      }).catch(function (err) { if (live() && version === searchRevision && err.name !== 'AbortError') q('search-status').textContent = 'Could not search observers: ' + err.message; });
+    }
+    q('search').addEventListener('input', function () { clearTimeout(searchTimer); searchRevision++; q('results').replaceChildren(); searchTimer = setTimeout(findObservers, 200); });
+    findObservers();
     function poll(id) {
       if (!live()) return;
       request('/status?id=' + encodeURIComponent(id), 'GET', null, true).then(function (result) {

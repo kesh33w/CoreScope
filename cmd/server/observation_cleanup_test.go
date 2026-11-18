@@ -81,3 +81,37 @@ func TestCleanupRejectsUnsafeAndChangedSelection(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 }
+
+func TestCleanupObserverSearchIncludesBlockedHistory(t *testing.T) {
+	s := cleanupTestServer(t)
+	s.cfg.ObserverBlacklist = []string{"bad"}
+	s.db.conn.Exec(`UPDATE observers SET name='AB0OO-910' WHERE id='bad'; UPDATE observers SET name='AB0OO-909' WHERE id='good'`)
+	w := httptest.NewRecorder()
+	s.handleCleanupObservers(w, httptest.NewRequest("GET", "/?q=ab0oo", nil))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var got struct {
+		Observers []cleanupObserver `json:"observers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Observers) != 2 {
+		t.Fatal(got)
+	}
+	o := got.Observers[1]
+	if o.ID != "bad" || !o.Blocked || o.Observations != 2 || o.LastSeen != 200 {
+		t.Fatal(o)
+	}
+	w = httptest.NewRecorder()
+	s.handleCleanupObservers(w, httptest.NewRequest("GET", "/?q=%25%27", nil))
+	if strings.Contains(w.Body.String(), "AB0OO") {
+		t.Fatal("search wildcard or quote interpreted as SQL")
+	}
+	w = httptest.NewRecorder()
+	s.handleCleanupObservers(w, httptest.NewRequest("GET", "/?q=a", nil))
+	if strings.Contains(w.Body.String(), "AB0OO") {
+		t.Fatal("unbounded search")
+	}
+}

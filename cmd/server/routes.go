@@ -290,6 +290,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/config/theme", s.handleConfigTheme).Methods("GET")
 	r.HandleFunc("/api/config/map", s.handleConfigMap).Methods("GET")
 	r.HandleFunc("/api/config/geo-filter", s.handleConfigGeoFilter).Methods("GET")
+	r.HandleFunc("/api/admin/observation-cleanup/observers", s.handleCleanupObservers).Methods("GET")
 	r.HandleFunc("/api/admin/observation-cleanup/capabilities", s.handleCleanupCapabilities).Methods("GET")
 	r.Handle("/api/admin/observation-cleanup/preview", s.requireAdmin(http.HandlerFunc(s.handleCleanupPreview))).Methods("POST")
 	r.Handle("/api/admin/observation-cleanup", s.requireAdmin(http.HandlerFunc(s.handleCleanupSubmit))).Methods("POST")

@@ -40,6 +40,7 @@ type paramMeta struct {
 // Key format: "METHOD /path/pattern"
 func routeDescriptions() map[string]routeMeta {
 	return map[string]routeMeta{
+		"GET /api/admin/observation-cleanup/observers":    {Summary: "Search historical and blocked observers by name or ID", Description: "Read-only bounded lookup for cleanup selection. Requires at least two search characters; returns at most 50 candidates. Does not bypass mutation authentication.", Tag: "admin"},
 		"GET /api/admin/observation-cleanup/capabilities": {Summary: "Get historical cleanup capabilities", Tag: "admin"},
 		"POST /api/admin/observation-cleanup/preview":     {Summary: "Preview scoped historical observation cleanup", Description: "Counts an exact observer selection and fixes its timestamp and observation ID cutoff. Historical radio frequency is not inferred.", Tag: "admin", Auth: true, Session: true},
 		"POST /api/admin/observation-cleanup":             {Summary: "Queue recoverable bulk observation cleanup", Description: "Requires the preview selection and expected count. Only the ingestor writes measurement data. A server restart is required to refresh in-memory analytics.", Tag: "admin", Auth: true, Session: true},

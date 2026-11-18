@@ -9,6 +9,7 @@ const fs=require('fs');const assert=require('assert');
  const req=route.request(),url=new URL(req.url());
  const reply=data=>route.fulfill({contentType:'application/json',body:JSON.stringify(data)});
  if(url.pathname.endsWith('/capabilities'))return reply({writeEnabled:enabled,frequencyHistoryAvailable:false});
+ if(url.pathname.endsWith('/observers'))return reply({observers:[{id:'blocked-radio-id',name:'AB0OO <img src=x onerror=alert(1)>',iata:'SMF',observations:3456,blocked:true,lastSeen:1700000000}],truncated:false});
  if(url.pathname.endsWith('/preview')){previews++;const selection=req.postDataJSON();await new Promise(r=>setTimeout(r,delay));return reply({selection,count:3456,maxObservationId:9999});}
  if(url.pathname.endsWith('/status'))return reply({status:'done',deleted:3456,restartRequired:true});
  if(url.pathname.endsWith('/restore')){restores++;return reply({requestId:'def456'});}
@@ -18,9 +19,11 @@ const fs=require('fs');const assert=require('assert');
  if(url.pathname==='/customize.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync('public/customize-v2.js','utf8')});
  return route.fulfill({contentType:'text/html',body:'<html><head><link rel="stylesheet" href="/style.css"></head><body><button id="customizeToggle">Customize</button><script src="/cleanup.js"></script><script src="/customize.js"></script></body></html>'});
  });
- await p.goto('http://cleanup.test/#/home?customizer=cleanup');await p.locator('#cleanup-observer').waitFor();await p.waitForFunction(()=>!document.querySelector('#cleanup-fields').disabled);
- await p.locator('#cleanup-observer').fill('ABC');await p.locator('#cleanup-iata').fill('SMF');await p.locator('#cleanup-preview').click();assert((await p.locator('#cleanup-status').textContent()).includes('API key'));assert.equal(previews,0);
+ await p.goto('http://cleanup.test/#/home?customizer=cleanup');await p.locator('#cleanup-search').waitFor();await p.waitForFunction(()=>!document.querySelector('#cleanup-fields').disabled);
+ await p.locator('summary').filter({hasText:'Advanced:'}).click();await p.locator('#cleanup-observer').fill('ABC');await p.locator('#cleanup-iata').fill('SMF');await p.locator('#cleanup-preview').click();assert((await p.locator('#cleanup-status').textContent()).includes('API key'));assert.equal(previews,0);
  await p.locator('#cleanup-key').fill('example-key');await p.locator('#cleanup-preview').click();await p.locator('#cleanup-delete').waitFor();assert((await p.locator('#cleanup-summary').textContent()).includes('3,456'));
+ // Human-readable blocked history search safely renders names, and selecting invalidates preview.
+ await p.locator('#cleanup-search').fill('AB0OO');await p.locator('#cleanup-results button').waitFor();assert((await p.locator('#cleanup-results').textContent()).includes('Blocked'));assert.equal(await p.locator('#cleanup-results img').count(),0);await p.locator('#cleanup-results button').click();assert.equal(await p.locator('#cleanup-observer').inputValue(),'blocked-radio-id');assert(await p.locator('#cleanup-delete').isHidden());assert((await p.locator('#cleanup-selected').textContent()).includes('3,456'));await p.locator('#cleanup-preview').click();await p.locator('#cleanup-delete').waitFor();
  p.once('dialog',d=>d.dismiss());await p.locator('#cleanup-delete').click();assert.equal(submissions,0);
  // Editing clears the old snapshot. A slow response must not resurrect it.
  delay=120;await p.locator('#cleanup-preview').click();await p.locator('#cleanup-observer').fill('XYZ');await p.waitForTimeout(200);assert(await p.locator('#cleanup-delete').isHidden());
@@ -32,11 +35,12 @@ const fs=require('fs');const assert=require('assert');
  await p.locator('.cust-close').click();assert(!p.url().includes('customizer='));assert.equal(await p.locator('#cleanup-key').inputValue(),'');
  await p.locator('#customizeToggle').click();assert(p.url().includes('customizer=cleanup'));assert.equal(await p.locator('#cleanup-observer').inputValue(),'XYZ');assert.equal(await p.locator('#cleanup-key').inputValue(),'');
  await p.locator('.cust-close').click();enabled=false;await p.locator('#customizeToggle').click();await p.waitForFunction(()=>document.querySelector('#cleanup-status').textContent.includes('unavailable'));assert(await p.locator('#cleanup-fields').evaluate(e=>e.disabled));
+ await p.locator('#cleanup-search').fill('AB0OO');await p.locator('#cleanup-results button').waitFor();await p.locator('#cleanup-results button').click();assert.equal(await p.locator('#cleanup-observer').inputValue(),'blocked-radio-id');assert(await p.locator('#cleanup-fields').evaluate(e=>e.disabled));
  // Closing while a POST is pending must retain the result ID for recovery.
  enabled=true;await p.locator('.cust-close').click();await p.locator('#customizeToggle').click();await p.waitForFunction(()=>!document.querySelector('#cleanup-fields').disabled);
  await p.locator('#cleanup-key').fill('example-key');await p.locator('#cleanup-preview').click();await p.locator('#cleanup-delete').waitFor();p.once('dialog',d=>d.accept());await p.locator('#cleanup-delete').click();await p.locator('.cust-close').click();await p.waitForTimeout(180);
  assert.equal(await p.evaluate(()=>localStorage.getItem('corescope-cleanup-last-job')),'abc123');
- await p.evaluate(()=>location.hash='#/home?customizer=cleanup');await p.locator('#cleanup-observer').waitFor();assert.equal(await p.locator('#cleanup-restore-id').inputValue(),'abc123');
+ await p.evaluate(()=>location.hash='#/home?customizer=cleanup');await p.locator('#cleanup-search').waitFor();assert.equal(await p.locator('#cleanup-restore-id').inputValue(),'abc123');
  await p.evaluate(()=>location.hash='#/home');await p.waitForFunction(()=>document.querySelector('.cust-overlay').classList.contains('hidden'));
  assert.deepStrictEqual(errors,[]);if(process.env.SCREENSHOT_PATH)await p.screenshot({path:process.env.SCREENSHOT_PATH});
  await browser.close();console.log('cleanup browser: auth, 3456-row snapshot, stale preview, cancel, repeat click, restore, restart notice, close/reopen, unavailable passed');

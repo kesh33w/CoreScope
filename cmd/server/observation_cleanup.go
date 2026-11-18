@@ -192,3 +192,62 @@ func (s *Server) handleCleanupStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, cleanupStatus{RequestID: id, Status: "pending"})
 }
+
+// Cleanup lookup deliberately uses the persisted observer table, not the live
+// analytics list: blocked and historical observers must remain selectable.
+// It exposes ordinary observer metadata only; mutation endpoints retain auth.
+type cleanupObserver struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	IATA         string `json:"iata"`
+	Observations int64  `json:"observations"`
+	LastSeen     int64  `json:"lastSeen"`
+	Blocked      bool   `json:"blocked"`
+}
+
+func (s *Server) handleCleanupObservers(w http.ResponseWriter, r *http.Request) {
+	term := strings.TrimSpace(r.URL.Query().Get("q"))
+	response := struct {
+		Observers []cleanupObserver `json:"observers"`
+		Truncated bool              `json:"truncated"`
+	}{Observers: []cleanupObserver{}}
+	if len(term) < 2 {
+		writeJSON(w, response)
+		return
+	}
+	if len(term) > 128 {
+		writeError(w, 400, "observer search must be at most 128 characters")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	rows, err := s.db.conn.QueryContext(ctx, `SELECT ob.id, COALESCE(ob.name,''),COALESCE(ob.iata,''),
+ (SELECT COUNT(*) FROM observations o WHERE o.observer_idx=ob.rowid),
+ COALESCE((SELECT MAX(o.timestamp) FROM observations o WHERE o.observer_idx=ob.rowid),0)
+ FROM observers ob WHERE instr(lower(COALESCE(ob.name,'')),lower(?))>0 OR instr(lower(ob.id),lower(?))>0
+ ORDER BY lower(COALESCE(ob.name,'')),ob.id LIMIT 51`, term, term)
+	if err != nil {
+		writeError(w, 500, "cannot search historical observers")
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var o cleanupObserver
+		if err = rows.Scan(&o.ID, &o.Name, &o.IATA, &o.Observations, &o.LastSeen); err != nil {
+			writeError(w, 500, "cannot read historical observers")
+			return
+		}
+		if len(response.Observers) == 50 {
+			response.Truncated = true
+			break
+		}
+		o.Blocked = s.cfg.IsObserverBlacklisted(o.ID)
+		response.Observers = append(response.Observers, o)
+	}
+	if err = rows.Err(); err != nil {
+		writeError(w, 500, "historical observer search timed out")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, response)
+}
