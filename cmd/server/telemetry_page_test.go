@@ -75,3 +75,82 @@ func TestTelemetryPageReportsOverWebSocket(t *testing.T) {
 		waitTelemetry(t, hub.telemetry, func(s telemetrySnapshot) bool { return len(s.Active) == 1 && s.Active[0].PageID == page })
 	}
 }
+
+func TestTelemetryArrivalHostnameOnly(t *testing.T) {
+	tel := newConnectionTelemetry("test", 2, 2)
+	id := tel.open(httptest.NewRequest("GET", "https://scope.example/", nil))
+	for _, host := range []string{"https://example.org/path?secret=1", "example.org/path", "user@example.org", "<script>", "example.org:443"} {
+		payload, _ := json.Marshal(map[string]string{"type": "page_view", "page": "live", "arrival_host": host})
+		tel.pageReport(id, payload)
+		if tel.snapshot().Active[0].ArrivalSource != "" {
+			t.Fatal("invalid hostname accepted")
+		}
+	}
+	tel.pageReport(id, []byte(`{"type":"page_view","page":"live","arrival_host":"Example.ORG"}`))
+	s := tel.snapshot().Active[0]
+	if s.ArrivalHost != "example.org" || s.ArrivalSource != "browser_reported" {
+		t.Fatalf("bad arrival: %+v", s)
+	}
+	tel.pageReport(id, []byte(`{"type":"page_view","page":"nodes","arrival_host":"other.example"}`))
+	if tel.snapshot().Active[0].ArrivalHost != "example.org" {
+		t.Fatal("arrival changed during navigation")
+	}
+	id2 := tel.open(httptest.NewRequest("GET", "https://scope.example/", nil))
+	tel.pageReport(id2, []byte(`{"type":"page_view","page":"live","arrival_host":""}`))
+	found := false
+	for _, s := range tel.snapshot().Active {
+		if s.ConnectionID == id2 {
+			found = s.ArrivalHost == "" && s.ArrivalSource == "browser_reported"
+		}
+	}
+	if !found {
+		t.Fatal("blank referrer must remain distinguishable from absent reporting")
+	}
+}
+
+func TestTelemetryFullURLBounds(t *testing.T) {
+	tel := newConnectionTelemetry("test", 2, 2)
+	id := tel.open(httptest.NewRequest("GET", "https://scope.example/", nil))
+	report := func(pageURL string) {
+		data, _ := json.Marshal(map[string]any{"type": "page_view", "page": "live", "arrival_host": "search.example", "arrival_url": "https://search.example/?q=radio", "page_url": pageURL, "page_url_truncated": true})
+		tel.pageReport(id, data)
+	}
+	wanted := "https://scope.example/?region=SMF#/live?zoom=10"
+	report(wanted)
+	s := tel.snapshot().Active[0]
+	if s.PageURL != wanted || s.ArrivalURL != "https://search.example/?q=radio" || !s.PageURLTruncated {
+		t.Fatal("full reported URL lost")
+	}
+	for _, bad := range []string{"javascript:alert(1)", "file:///private", "https://example.org/" + strings.Repeat("x", 4096), "https://example.org/\nprivate"} {
+		report(bad)
+		if tel.snapshot().Active[0].PageURL != wanted {
+			t.Fatal("invalid URL accepted")
+		}
+	}
+	report("https://scope.example/?x=1%")
+	if tel.snapshot().Active[0].PageURL != "https://scope.example/?x=1%" {
+		t.Fatal("truncated percent escape discarded")
+	}
+}
+
+func TestTelemetryURLSnapshotBudget(t *testing.T) {
+	s := telemetrySnapshot{}
+	for i := 0; i < 100; i++ {
+		s.Active = append(s.Active, connectionSession{ArrivalURL: strings.Repeat("<", 4096), PageURL: strings.Repeat("&", 4096)})
+	}
+	s.Closed = append(s.Closed, connectionSession{ArrivalURL: strings.Repeat(">", 4096)})
+	limitTelemetryURLs(&s)
+	if !s.Closed[0].URLDetailsOmitted {
+		t.Fatal("closed URL bypassed combined budget")
+	}
+	total, omitted := 0, 0
+	for _, row := range s.Active {
+		total += 6 * (len(row.ArrivalURL) + len(row.PageURL))
+		if row.URLDetailsOmitted {
+			omitted++
+		}
+	}
+	if total > 768*1024 || omitted == 0 || len(s.Active) != 100 {
+		t.Fatal("URL budget discarded connections or not bounded")
+	}
+}

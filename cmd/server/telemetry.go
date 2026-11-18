@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,13 @@ import (
 )
 
 type connectionSession struct {
+	URLDetailsOmitted    bool   `json:"url_details_omitted"`
+	ArrivalURL           string `json:"arrival_url"`
+	ArrivalURLTruncated  bool   `json:"arrival_url_truncated"`
+	PageURL              string `json:"page_url"`
+	PageURLTruncated     bool   `json:"page_url_truncated"`
+	ArrivalHost          string `json:"arrival_host"`
+	ArrivalSource        string `json:"arrival_source"`
 	PageID               string `json:"page_id"`
 	PageSource           string `json:"page_source"`
 	PageReportedAt       string `json:"page_reported_at"`
@@ -199,7 +207,7 @@ func (t *connectionTelemetry) open(r *http.Request) string {
 }
 
 // Page reports are optional browser claims, never proof of attention. Only
-// coarse, fixed labels enter private telemetry; raw paths and parameters do not.
+// labels and explicitly requested bounded URLs enter only private telemetry.
 var telemetryPageNames = map[string]string{
 	"home": "Home", "packets": "Packets", "packet-detail": "Packet details",
 	"nodes": "Nodes", "node-analytics": "Node analytics", "node-reach": "Node reach",
@@ -211,13 +219,43 @@ var telemetryPageNames = map[string]string{
 	"account": "Account", "admin": "Administration", "unknown": "Unknown",
 }
 
+// URLs remain private connection telemetry, never public packet/API data.
+// Up to 4 KiB per URL. Query strings are intentionally preserved at operator request.
+func telemetryValidURL(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	if len(raw) > 4096 {
+		return false
+	}
+	if strings.ContainsAny(raw, "\r\n\x00") {
+		return false
+	}
+	// Truncation can end mid-percent-escape in path/query; validate authority only.
+	authority := strings.SplitN(strings.SplitN(raw, "?", 2)[0], "#", 2)[0]
+	if schemeEnd := strings.Index(authority, "://"); schemeEnd >= 0 {
+		if slash := strings.Index(authority[schemeEnd+3:], "/"); slash >= 0 {
+			authority = authority[:schemeEnd+3+slash]
+		}
+	}
+	u, err := url.Parse(authority)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != ""
+}
+
+var telemetryArrivalHost = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)
+
 type telemetryPageReport struct {
-	Type string `json:"type"`
-	Page string `json:"page"`
+	ArrivalURL          *string `json:"arrival_url,omitempty"`
+	ArrivalURLTruncated bool    `json:"arrival_url_truncated,omitempty"`
+	PageURL             *string `json:"page_url,omitempty"`
+	PageURLTruncated    bool    `json:"page_url_truncated,omitempty"`
+	Type                string  `json:"type"`
+	Page                string  `json:"page"`
+	ArrivalHost         *string `json:"arrival_host,omitempty"`
 }
 
 func (t *connectionTelemetry) pageReport(id string, data []byte) {
-	if t == nil || id == "" || len(data) == 0 || len(data) > 128 {
+	if t == nil || id == "" || len(data) == 0 || len(data) > 65536 {
 		return
 	}
 	var report telemetryPageReport
@@ -230,13 +268,42 @@ func (t *connectionTelemetry) pageReport(id string, data []byte) {
 	if decoder.Decode(&trailing) != io.EOF {
 		return
 	}
+	for _, value := range []*string{report.ArrivalURL, report.PageURL} {
+		if value != nil && !telemetryValidURL(*value) {
+			return
+		}
+	}
+	var arrival string
+	if report.ArrivalHost != nil {
+		arrival = strings.ToLower(*report.ArrivalHost)
+		if len(arrival) > 253 || (arrival != "" && !telemetryArrivalHost.MatchString(arrival) && net.ParseIP(strings.Trim(arrival, "[]")) == nil) {
+			return
+		}
+	}
 	_, ok := telemetryPageNames[report.Page]
 	if !ok {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if s := t.active[id]; s != nil && s.PageID != report.Page {
+	if s := t.active[id]; s != nil {
+		// Record only the first report per socket. Blank means direct OR unavailable.
+		if report.ArrivalHost != nil && s.ArrivalSource == "" {
+			s.ArrivalHost = arrival
+			s.ArrivalSource = "browser_reported"
+			if report.ArrivalURL != nil {
+				s.ArrivalURL = *report.ArrivalURL
+				s.ArrivalURLTruncated = report.ArrivalURLTruncated
+			}
+		}
+		sameURL := report.PageURL == nil || s.PageURL == *report.PageURL
+		if report.PageURL != nil {
+			s.PageURL = *report.PageURL
+			s.PageURLTruncated = report.PageURLTruncated
+		}
+		if s.PageID == report.Page && sameURL {
+			return
+		}
 		s.PageID = report.Page
 		s.PageSource = "browser_reported"
 		s.PageReportedAt = telemetryTime()
@@ -296,9 +363,31 @@ func (t *connectionTelemetry) close(id, reason string) {
 		t.dropped++
 	}
 }
+
+// Bound extra URL bytes independently of connection counts. Six is the worst
+// JSON escaping expansion. Active sessions take priority over closed history.
+func limitTelemetryURLs(s *telemetrySnapshot) {
+	const maxURLJSONBytes = 768 * 1024
+	budget := maxURLJSONBytes
+	sort.Slice(s.Active, func(i, j int) bool { return s.Active[i].ConnectionID < s.Active[j].ConnectionID })
+	trim := func(rows []connectionSession) {
+		for i := range rows {
+			cost := 6 * (len(rows[i].ArrivalURL) + len(rows[i].PageURL))
+			if cost > budget {
+				rows[i].ArrivalURL = ""
+				rows[i].PageURL = ""
+				rows[i].URLDetailsOmitted = true
+			} else {
+				budget -= cost
+			}
+		}
+	}
+	trim(s.Active)
+	trim(s.Closed)
+}
+
 func (t *connectionTelemetry) snapshot() telemetrySnapshot {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	s := telemetrySnapshot{SchemaVersion: 1, SourceID: t.source, InstanceID: t.instance, CapturedAt: telemetryTime(), Sequence: t.sequence, EarliestSequence: t.sequence + 1, DroppedEvents: t.dropped, Limits: t.limits, Active: make([]connectionSession, 0, len(t.active)), Closed: make([]connectionSession, 0, len(t.closed)), HTTP: []telemetryHTTP{}}
 	for _, v := range t.active {
 		s.Active = append(s.Active, *v)
@@ -309,6 +398,8 @@ func (t *connectionTelemetry) snapshot() telemetrySnapshot {
 	if len(s.Closed) > 0 {
 		s.EarliestSequence = s.Closed[0].EndSequence
 	}
+	t.mu.Unlock()
+	limitTelemetryURLs(&s)
 	return s
 }
 

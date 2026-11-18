@@ -100,6 +100,8 @@ node tests/unit/test-issue-1456-score-labels.js
 node tests/unit/test-issue-1461-mobile-page-actions.js
 node tests/unit/test-issue-1470-card-bg-contrast.js
 node tests/unit/test-issue-1470-node-tile-helper.js
+node tests/unit/test-tile-resolver.js
+node tests/unit/test-tile-provider-switch.js
 node tests/unit/test-issue-1473-prefix-generator.js
 node tests/unit/test-issue-1473-reserved-prefixes.js
 node tests/unit/test-issue-1485-live-anim-z.js
@@ -236,6 +238,7 @@ node tests/unit/test-observer-neighbors.js
 node tests/unit/test-warmup-banner.js
 node tests/unit/test-ws-stale-watchdog-1074.js
 node tests/unit/test-telemetry-page.js
+node tests/unit/test-arrival-telemetry.js
 node tests/unit/test-xss-escape-sinks.js
 
 echo "All standalone frontend suites passed"
