@@ -63,7 +63,7 @@
       return h;
     }
     function request(path, method, body, auth) {
-      return Promise.resolve().then(function () { return fetch(base + path, {method: method, cache:'no-store', signal:(path === '' || path === '/restore') ? undefined : controller.signal, headers:auth ? headers() : {'Content-Type':'application/json'}, body:body == null ? undefined : JSON.stringify(body)}).then(function (r) {
+      return Promise.resolve().then(function () { return CSApi.fetch(base + path, {method: method, cache:'no-store', signal:(path === '' || path === '/restore') ? undefined : controller.signal, headers:auth ? headers() : {'Content-Type':'application/json'}, body:body == null ? undefined : JSON.stringify(body)}).then(function (r) {
         return r.json().then(function (data) { if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status); return data; });
       }); });
     }

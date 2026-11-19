@@ -36,12 +36,18 @@ const routeTypeTransportSQL = "route_type IN (0, 3)"
 // per MeshCore protocol (#1838).
 const routeTypeNonTransportSQL = "route_type IN (1, 2)"
 
+// contentHashMigrationName is the ingestor's async migration that rewrites
+// pre-#787 content hashes (cmd/ingestor/hash_migrate.go). The server only reads
+// its status: the migration writes, so it cannot run here (#1856).
+const contentHashMigrationName = "content_hash_payload_bits_v1"
+
 // DB wraps a read-only connection to the MeshCore SQLite database.
 type DB struct {
 	advertEvidenceTable     atomic.Bool
 	txRewriteFeedTable      atomic.Bool // tx_rewrite_feed present (#2107); re-probed while absent
 	clientNodeNamesTable    atomic.Bool // client_node_names present; re-probed while absent (clientNodeNamesPresent)
 	inactiveNodesTable      atomic.Bool // inactive_nodes present; re-probed while absent (clientNameHeard)
+	hashMigrationDone       atomic.Bool // ingestor's content-hash migration seen done; latched (hashMigrationComplete)
 	advertEvidenceReadHook  func()      // test-only: immediately before a bulk mask query
 	conn                    *sql.DB
 	path                    string // filesystem path to the database file
@@ -203,6 +209,26 @@ func (db *DB) stmtQueryRow(stmt *sql.Stmt, fallbackSQL string, args ...interface
 
 // prepareStatements creates prepared statements for frequently-called queries.
 // SQLite compiles and caches the query plan once, avoiding re-parsing per request.
+// hashMigrationComplete reports whether the ingestor has finished the
+// content-hash migration, for /api/stats.hashMigrationComplete. A missing
+// _async_migrations table or row, or any status other than done, is false:
+// the migration is not proven finished. done is final (the ingestor never
+// re-runs a done migration), so it is latched and the query stops.
+func (db *DB) hashMigrationComplete() bool {
+	if db.hashMigrationDone.Load() {
+		return true
+	}
+	var status string
+	if err := db.conn.QueryRow(`SELECT status FROM _async_migrations WHERE name = ?`, contentHashMigrationName).Scan(&status); err != nil {
+		return false
+	}
+	if status != "done" {
+		return false
+	}
+	db.hashMigrationDone.Store(true)
+	return true
+}
+
 func (db *DB) prepareStatements() error {
 	var err error
 	prepare := func(query string) *sql.Stmt {
@@ -2509,6 +2535,24 @@ func (db *DB) GetMaxTransmissionID() int {
 	return maxID
 }
 
+// highWaterMarks reads MAX(id) of transmissions and observations. Unlike
+// GetMaxTransmissionID it reports failure: a 0 from a failed query would
+// otherwise replay the whole table. ok is false without a connection.
+func (db *DB) highWaterMarks() (txMax, obsMax int, ok bool) {
+	if db == nil || db.conn == nil {
+		return 0, 0, false
+	}
+	if err := db.conn.QueryRow("SELECT COALESCE(MAX(id), 0) FROM transmissions").Scan(&txMax); err != nil {
+		log.Printf("[store] startup high-water mark (transmissions): %v", err)
+		return 0, 0, false
+	}
+	if err := db.conn.QueryRow("SELECT COALESCE(MAX(id), 0) FROM observations").Scan(&obsMax); err != nil {
+		log.Printf("[store] startup high-water mark (observations): %v", err)
+		return 0, 0, false
+	}
+	return txMax, obsMax, true
+}
+
 // GetMaxObservationID returns the current max observation ID for polling.
 func (db *DB) GetMaxObservationID() int {
 	var maxID int
@@ -3333,7 +3377,7 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 	if err := row.Scan(
 		&resp.Summary.TransportTotal,
 		&resp.Summary.Scoped,
-		&resp.Summary.Unscoped,
+		&resp.Summary.UnscopedTransport,
 		&resp.Summary.UnknownScope,
 	); err != nil {
 		return nil, fmt.Errorf("scope summary query: %w", err)
@@ -3343,14 +3387,19 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 	// transport_code_1 per MeshCore protocol, so they are inherently unscoped.
 	// Fold their count into Summary.Unscoped so the analytics denominator
 	// reflects total-observed-transmissions rather than only transport-eligible.
-	var nonTransportUnscoped int
+	// #2364: keep the per-route split and report Total so the summary adds up.
+	// Same single scan as before; the CASE split costs nothing extra.
 	if err := db.conn.QueryRow(`
-		SELECT COUNT(*) FROM transmissions
+		SELECT
+			COALESCE(SUM(CASE WHEN route_type = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN route_type = 2 THEN 1 ELSE 0 END), 0)
+		FROM transmissions
 		WHERE `+routeTypeNonTransportSQL+` AND first_seen >= ?
-	`, since).Scan(&nonTransportUnscoped); err != nil {
+	`, since).Scan(&resp.Summary.UnscopedFlood, &resp.Summary.UnscopedDirect); err != nil {
 		return nil, fmt.Errorf("scope non-transport count query: %w", err)
 	}
-	resp.Summary.Unscoped += nonTransportUnscoped
+	resp.Summary.Unscoped = resp.Summary.UnscopedTransport + resp.Summary.UnscopedFlood + resp.Summary.UnscopedDirect
+	resp.Summary.Total = resp.Summary.Scoped + resp.Summary.Unscoped
 
 	// Per-region counts (named regions only)
 	rows, err := db.conn.Query(scopeStatsByRegionQuery, since)

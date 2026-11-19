@@ -1,6 +1,6 @@
 # Fork maintenance
 
-This fork retains upstream CoreScope history. Release `v3.17.0+sacmesh.1` integrates the unified SacMesh changes with the upstream `v3.17.0` tag. The previously deployed `v3.15.0+sacmesh.1` remains a separate tested release, not a second fork. It keeps upstream licensing and attribution. It is not an upstream release.
+This fork retains upstream CoreScope history. Release `v3.18.0+sacmesh.1` merges upstream `master` after `v3.18.0` (through `6c78a1d2`) into the SacMesh changes; `v3.17.0+sacmesh.1` and `.2` were built on the upstream `v3.17.0` tag. The previously deployed `v3.15.0+sacmesh.1` remains a separate tested release, not a second fork. It keeps upstream licensing and attribution. It is not an upstream release.
 
 ## Included changes
 
@@ -24,6 +24,8 @@ A release must not replace site-specific broker subscriptions, region filters, b
 
 The web server keeps the analyzer database read-only. The ingestor remains the only writer of measurements and schema changes. The only analyzer schema change of the SacMesh fork is the additive `hop_aliases` table (created empty on start; older binaries ignore it). The newer upstream base adds observer radio history and neighbor-report tables. With accounts enabled, it also upgrades the separate users database from schema v6 to v8; older binaries cannot open that upgraded users database. Back up both databases before deployment and test rollback on copies. There is no further upstream database migration from v3.16 to v3.17. Merging source does not upgrade a running instance.
 
+From v3.17 to v3.18 upstream adds two migrations. The ingestor runs the content-hash migration `content_hash_payload_bits_v1` once (#2409): it scans every packet by id. It rewrites stale hashes and merges any duplicates the rewrite creates; the fork's server-side copy of this migration is gone. Its status is a row in `_async_migrations`, which older binaries ignore; a merge is not undone by a rollback. With user accounts on, `users.db` moves to schema v9 (#2415), which v3.17 binaries refuse; neither SacMesh instance enables accounts. The UI's live feed now connects to `/ws` (#2383), so a proxy must forward WebSocket upgrades on `/ws` as well as `/`.
+
 ## Release checks
 
 Run `make test`, `make vet` and `sh test-all.sh`. Run focused race tests for changed concurrent code. Validate the frontend in a browser before deployment.
@@ -42,7 +44,7 @@ Keep separate container names, ports, configuration, data directories and databa
 
 ## Map tile provider follow-up
 
-The fork includes upstream change `a0b4e6cf` (after the v3.17.0 release) for consistent light/dark tile selection, late configuration and node-map refresh. Map and Live also refresh the existing layer's maximum zoom and attribution when switching providers, including label overlays. Re-registering the layer lets Leaflet recalculate its zoom limits; it does not add packet-processing work.
+The fork includes upstream change `a0b4e6cf` (part of v3.18.0) for consistent light/dark tile selection, late configuration and node-map refresh. Map and Live also refresh the existing layer's maximum zoom and attribution when switching providers, including label overlays. Re-registering the layer lets Leaflet recalculate its zoom limits; it does not add packet-processing work.
 
 Explicit operator tile URL overrides now take precedence consistently on these maps. Without an override, the existing customizer provider selection and server defaults apply. No configuration keys or defaults are added by this follow-up. Test fresh loads, provider/theme changes and zoom limits before deploying to an instance with custom tile URLs. This source change alone does not update running instances.
 

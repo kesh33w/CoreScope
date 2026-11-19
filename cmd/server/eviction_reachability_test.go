@@ -7,7 +7,6 @@ import (
 	"runtime/pprof"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -348,50 +347,5 @@ func BenchmarkEvictionNodeSweep(b *testing.B) {
 			}
 			b.ReportMetric(float64(count*8), "relay-memberships/batch")
 		})
-	}
-}
-
-func TestEvictionReleasesGroupedCache(t *testing.T) {
-	now := time.Now().UTC()
-	s := makeTestStore(4, now.Add(-30*time.Minute), 0)
-	s.retentionHours = 1
-	if got := s.QueryGroupedPackets(PacketQuery{}).Total; got != 4 {
-		t.Fatalf("warm grouped total=%d, want 4", got)
-	}
-	// A returned snapshot is allowed to finish after eviction. Invalidating the
-	// cache must release its root without clearing an active reader's array.
-	reader := s.groupedCacheTxs
-	s.groupedCacheExp = now.Add(-time.Second)
-	s.packets[0].FirstSeen = now.Add(-2 * time.Hour).Format(time.RFC3339)
-	s.RunEviction()
-	if s.groupedCacheTxs != nil {
-		t.Error("eviction retained the expired grouped packet cache")
-	}
-	if len(reader) != 4 || reader[0].tx == nil {
-		t.Error("cache invalidation corrupted a borrowed grouped snapshot")
-	}
-	if got := s.QueryGroupedPackets(PacketQuery{}).Total; got != 3 {
-		t.Errorf("grouped total after eviction=%d, want 3", got)
-	}
-}
-
-func TestGroupedCacheRejectsPreEvictionSnapshot(t *testing.T) {
-	now := time.Now().UTC()
-	s := makeTestStore(4, now.Add(-30*time.Minute), 0)
-	s.retentionHours = 1
-	s.QueryGroupedPackets(PacketQuery{})
-	oldSnapshot := s.groupedCacheTxs
-	oldGeneration := atomic.LoadInt64(&s.evicted)
-	s.packets[0].FirstSeen = now.Add(-2 * time.Hour).Format(time.RFC3339)
-	s.RunEviction()
-	// A query that captured its pointers before eviction can finish sorting
-	// afterwards. Exercise its real publication step in that exact order.
-	s.cacheGroupedPackets(oldSnapshot, "retired", oldGeneration)
-	if s.groupedCacheTxs != nil {
-		t.Fatal("late grouped-cache publication retained a pre-eviction snapshot")
-	}
-	s.cacheGroupedPackets([]groupedEntry{{tx: s.packets[0]}, {tx: s.packets[1]}, {tx: s.packets[2]}}, "live", atomic.LoadInt64(&s.evicted))
-	if len(s.groupedCacheTxs) != 3 || s.groupedCacheKey != "live" {
-		t.Fatal("current grouped snapshot was not published")
 	}
 }
