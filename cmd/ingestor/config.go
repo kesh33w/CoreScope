@@ -99,6 +99,10 @@ type Config struct {
 	// no UpsertObserver, no observations, no metrics.
 	ObserverBlacklist []string `json:"observerBlacklist,omitempty"`
 
+	// HopAliases lets named observers label path-hop aliases (see
+	// hop_aliases.go). Nil or empty observers disables it.
+	HopAliases *HopAliasesConfig `json:"hopAliases,omitempty"`
+
 	// obsBlacklistSetCached is the lazily-built lowercase set for O(1) lookups.
 	obsBlacklistSetCached map[string]bool
 	obsBlacklistOnce      sync.Once
@@ -228,6 +232,44 @@ func (c *Config) ClientRegionsEnabled() bool {
 // (meshcore/client/<pubkey>/names).
 type ClientNodeNamesConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+// HopAliasesConfig names the observers trusted to label hop aliases: path-hop
+// identities that never advertise, such as HydraHop's per-antenna aliases.
+// Observers are bare 64-hex public keys; a scoped observer ID
+// (<key>@<radio>@<IATA>) matches by its key. Sources, when set, also limits
+// which MQTT sources may deliver them, so an unauthenticated broker cannot
+// relay a forged status under a trusted key.
+type HopAliasesConfig struct {
+	Observers []string `json:"observers"`
+	Sources   []string `json:"sources,omitempty"`
+}
+
+// HopAliasOwner returns the trusted observer key (lowercase) for a status
+// message on this source, or "" when it may not label hop aliases.
+func (c *Config) HopAliasOwner(source, observerID string) string {
+	if c == nil || c.HopAliases == nil || len(c.HopAliases.Observers) == 0 {
+		return ""
+	}
+	key := strings.ToLower(strings.SplitN(observerID, "@", 2)[0])
+	if len(c.HopAliases.Sources) > 0 {
+		allowed := false
+		for _, s := range c.HopAliases.Sources {
+			if s == source {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return ""
+		}
+	}
+	for _, o := range c.HopAliases.Observers {
+		if strings.ToLower(strings.TrimSpace(o)) == key && len(key) == 64 {
+			return key
+		}
+	}
+	return ""
 }
 
 // ClientNodeNamesEnabled reports whether node-name answers are recorded.

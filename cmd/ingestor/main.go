@@ -1052,6 +1052,17 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		if err := store.UpsertObserverAt(observerID, name, iata, meta, ""); err != nil {
 			log.Printf("MQTT [%s] observer status error: %v", tag, err)
 		}
+		// Live status only: a retained replay must not refresh alias last_seen,
+		// for the same reason it does not refresh the observer's.
+		if raw, present := msg["hop_aliases"]; present {
+			if owner := cfg.HopAliasOwner(source.Name, observerID); owner != "" {
+				if aliases, ok := parseHopAliases(raw); ok {
+					if _, err := store.ReplaceHopAliases(owner, aliases, time.Now().UTC().Format(time.RFC3339)); err != nil {
+						log.Printf("MQTT [%s] hop alias update error: %v", tag, err)
+					}
+				}
+			}
+		}
 		if err := store.RecordObserverRadios(observerID, extractRadioReports(msg), time.Now()); err != nil {
 			log.Printf("MQTT [%s] observer radio history error: %v", tag, err)
 		}
