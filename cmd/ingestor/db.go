@@ -509,6 +509,18 @@ func applySchema(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_cnn_target ON client_node_names(target, observed_at);
 		CREATE INDEX IF NOT EXISTS idx_cnn_prune  ON client_node_names(observed_at);
+
+		-- Path-hop aliases labelled by a trusted observer (hop_aliases.go). Each
+		-- alias also has a nodes row so path resolution names it; this table
+		-- records which nodes rows are aliases and who owns them, so a stale
+		-- alias can be removed and a real node is never overwritten.
+		CREATE TABLE IF NOT EXISTS hop_aliases (
+			alias_key  TEXT PRIMARY KEY,
+			owner      TEXT NOT NULL,
+			label      TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_hop_aliases_owner ON hop_aliases(owner);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("base schema: %w", err)
