@@ -10,6 +10,7 @@ This fork retains upstream CoreScope history. Release `v3.17.0+sacmesh.1` integr
 - Cache eviction releases secondary references and clears removed slice entries. Hash migration does not restore observations already evicted from memory.
 - Optional private connection telemetry reports session status and verified proxy provenance. Browser page reports contain only allowlisted page names, never URLs or query strings. Detailed telemetry is not part of the public API.
 - Live-map path inference anchors observations to the receiver and preserves unknown-hop gaps. The removed inferred-hop toggle is no longer included in settings sync.
+- **Hop alias names** (`hopAliases`, off by default). Trusted observers can name path-hop identities that never advertise, such as HydraHop's per-antenna aliases. See [Hop alias names](#hop-alias-names).
 
 ## Observer comparisons
 
@@ -21,7 +22,7 @@ Build the web server, ingestor and frontend assets from the same reviewed source
 
 A release must not replace site-specific broker subscriptions, region filters, blacklists, retention settings, memory limits, private telemetry paths or trusted-proxy lists. Changing a binary is not permission to change those settings.
 
-The web server keeps the analyzer database read-only. The ingestor remains the only writer of measurements and schema changes. The SacMesh changes add no analyzer schema migration of their own. The newer upstream base adds observer radio history and neighbor-report tables. With accounts enabled, it also upgrades the separate users database from schema v6 to v8; older binaries cannot open that upgraded users database. Back up both databases before deployment and test rollback on copies. There is no further upstream database migration from v3.16 to v3.17. Merging source does not upgrade a running instance.
+The web server keeps the analyzer database read-only. The ingestor remains the only writer of measurements and schema changes. The only analyzer schema change of the SacMesh fork is the additive `hop_aliases` table (created empty on start; older binaries ignore it). The newer upstream base adds observer radio history and neighbor-report tables. With accounts enabled, it also upgrades the separate users database from schema v6 to v8; older binaries cannot open that upgraded users database. Back up both databases before deployment and test rollback on copies. There is no further upstream database migration from v3.16 to v3.17. Merging source does not upgrade a running instance.
 
 ## Release checks
 
@@ -44,3 +45,26 @@ Keep separate container names, ports, configuration, data directories and databa
 The fork includes upstream change `a0b4e6cf` (after the v3.17.0 release) for consistent light/dark tile selection, late configuration and node-map refresh. Map and Live also refresh the existing layer's maximum zoom and attribution when switching providers, including label overlays. Re-registering the layer lets Leaflet recalculate its zoom limits; it does not add packet-processing work.
 
 Explicit operator tile URL overrides now take precedence consistently on these maps. Without an override, the existing customizer provider selection and server defaults apply. No configuration keys or defaults are added by this follow-up. Test fresh loads, provider/theme changes and zoom limits before deploying to an instance with custom tile URLs. This source change alone does not update running instances.
+
+## Hop alias names
+
+HydraHop replaces its own path hop with a per-antenna alias that records which antenna heard a packet and which one sent it. Aliases never advertise, so a stock CoreScope shows them as unknown hops. HydraHop lists them in its MQTT status message:
+
+```json
+"hop_aliases": [{"key": "<64 hex>", "label": "BD6E g3910→rak910"}]
+```
+
+With `hopAliases` configured, the ingestor accepts that list only from the named observer keys, and only via the named MQTT sources (use a source whose broker authenticates observers). Each alias becomes a `nodes` row with role `repeater`, no location and its label as the name. Path resolution, `/api/nodes` and the browser hop resolver then name it with no server or frontend change.
+
+```json
+"hopAliases": {
+  "observers": ["<observer public key>", "..."],
+  "sources": ["SACMesh"]
+}
+```
+
+- A scoped observer ID (`<key>@<radio>@<IATA>`) matches by its key. Only live status messages apply; a retained replay does not.
+- The table `hop_aliases` records which `nodes` rows are aliases and which observer owns each. A later status that drops an alias deletes its row. An alias key that already belongs to a real node, or to another trusted observer, is skipped.
+- At most 64 aliases per message; labels are trimmed to 48 characters with control characters removed.
+- Alias rows age out with `retention.nodeDays` like any node if the observer stops reporting.
+- Alias rows appear in node lists as repeaters without a location, and count toward node totals.
