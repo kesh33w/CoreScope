@@ -285,112 +285,118 @@ type FromPubkeyBackfillStats struct {
 	Done      bool  `json:"done"`
 }
 
-// BackfillFromPubkey scans transmissions where from_pubkey IS NULL and
-// payload_type = 4 (ADVERT) and populates from_pubkey from decoded_json.
-// Chunked + yields between batches. Safe to call repeatedly; once a row
-// is set to either "" or hex it never matches the WHERE clause again.
+// advertBackfillBatchSQL bounds rows VISITED, not just matching ADVERTs.
+// Filtering payload_type/from_pubkey in WHERE lets SQLite walk all historical
+// NULL entries before finding an empty result. That held the only connection
+// for minutes on a busy disk, blocking MQTT startup and writes.
+const advertBackfillBatchSQL = `SELECT id, payload_type = 4 AND from_pubkey IS NULL,
+ CASE WHEN payload_type = 4 AND from_pubkey IS NULL THEN decoded_json END
+ FROM transmissions WHERE id > ? AND id <= ? ORDER BY id LIMIT ?`
+
+const advertBackfillMaxBatch = 256
+
+type advertBackfillRow struct {
+	id int64
+	pk string
+}
+
+func (s *Store) readAdvertBackfillBatch(after, ceiling int64, limit int) ([]advertBackfillRow, int64, error) {
+	rows, err := s.db.Query(advertBackfillBatchSQL, after, ceiling, limit)
+	if err != nil {
+		return nil, after, err
+	}
+	defer rows.Close()
+	batch := make([]advertBackfillRow, 0, limit)
+	last := after
+	for rows.Next() {
+		var id int64
+		var eligible sql.NullBool
+		var decoded sql.NullString
+		if err := rows.Scan(&id, &eligible, &decoded); err != nil {
+			return nil, after, err
+		}
+		last = id
+		if eligible.Valid && eligible.Bool {
+			batch = append(batch, advertBackfillRow{id: id, pk: extractPubkeyFromAdvertJSON(decoded.String)})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, after, err
+	}
+	return batch, last, nil
+}
+
+// BackfillFromPubkey scans a snapshot of transmission IDs in bounded pages,
+// releasing the sole writer connection between pages, including pages with no
+// eligible ADVERTs. It never performs an unbounded COUNT before MQTT startup.
+// Progress total is the number discovered so far (exact when done), rather
+// than an expensive upfront count. Existing callers may pass nil.
 func (s *Store) BackfillFromPubkey(chunkSize int, yieldDuration time.Duration, progress func(total, processed int64, done bool)) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[backfill] from_pubkey panic recovered: %v", r)
 		}
-		if progress != nil {
-			progress(0, 0, true) // signal done; values overwritten below if collected
-		}
 	}()
-	if chunkSize <= 0 {
-		chunkSize = 5000
+	if chunkSize <= 0 || chunkSize > advertBackfillMaxBatch {
+		chunkSize = advertBackfillMaxBatch
 	}
-
-	var total int64
-	if err := s.db.QueryRow(
-		"SELECT COUNT(*) FROM transmissions WHERE from_pubkey IS NULL AND payload_type = 4",
-	).Scan(&total); err != nil {
-		log.Printf("[backfill] from_pubkey count error: %v", err)
+	var ceiling sql.NullInt64
+	if err := s.db.QueryRow("SELECT MAX(id) FROM transmissions").Scan(&ceiling); err != nil {
+		log.Printf("[backfill] from_pubkey snapshot: %v", err)
 		return
 	}
-	if total == 0 {
-		log.Println("[backfill] from_pubkey: nothing to do")
-		if progress != nil {
-			progress(0, 0, true)
-		}
-		return
-	}
-	if progress != nil {
-		progress(total, 0, false)
-	}
-	log.Printf("[backfill] from_pubkey starting: %d ADVERT rows", total)
-
-	stmt, err := s.db.Prepare("UPDATE transmissions SET from_pubkey = ? WHERE id = ?")
-	if err != nil {
-		log.Printf("[backfill] from_pubkey prepare: %v", err)
-		return
-	}
-	defer stmt.Close()
-
 	var processed int64
-	for {
-		rows, err := s.db.Query(
-			"SELECT id, decoded_json FROM transmissions WHERE from_pubkey IS NULL AND payload_type = 4 LIMIT ?",
-			chunkSize)
+	report := func(done bool) {
+		if progress != nil {
+			progress(processed, processed, done)
+		}
+	}
+	if !ceiling.Valid {
+		report(true)
+		return
+	}
+	var after int64
+	for after < ceiling.Int64 {
+		batch, last, err := s.readAdvertBackfillBatch(after, ceiling.Int64, chunkSize)
 		if err != nil {
 			log.Printf("[backfill] from_pubkey select: %v", err)
 			return
 		}
-		type row struct {
-			id int64
-			pk string
-		}
-		batch := make([]row, 0, chunkSize)
-		for rows.Next() {
-			var id int64
-			var dj sql.NullString
-			if err := rows.Scan(&id, &dj); err != nil {
-				continue
-			}
-			batch = append(batch, row{id: id, pk: extractPubkeyFromAdvertJSON(dj.String)})
-		}
-		rows.Close()
-		if len(batch) == 0 {
+		if last == after {
 			break
 		}
-
-		tx, err := s.db.Begin()
-		if err != nil {
-			log.Printf("[backfill] from_pubkey begin tx: %v", err)
-			return
-		}
-		txStmt := tx.Stmt(stmt)
-		for _, b := range batch {
-			// Sentinel: "" = scanned-no-pubkey (so the WHERE clause
-			// won't keep rescanning this row). hex = real pubkey.
-			var val interface{} = ""
-			if b.pk != "" {
-				val = b.pk
+		if len(batch) > 0 {
+			tx, err := s.db.Begin()
+			if err != nil {
+				log.Printf("[backfill] from_pubkey begin: %v", err)
+				return
 			}
-			if _, err := txStmt.Exec(val, b.id); err != nil {
-				log.Printf("[backfill] from_pubkey update id=%d: %v", b.id, err)
+			for _, row := range batch {
+				// Empty string is the existing scanned-without-pubkey sentinel.
+				// Guard against changing a row populated by normal ingest meanwhile.
+				if _, err = tx.Exec("UPDATE transmissions SET from_pubkey = ? WHERE id = ? AND from_pubkey IS NULL AND payload_type = 4", row.pk, row.id); err != nil {
+					break
+				}
 			}
+			if err != nil {
+				tx.Rollback()
+				log.Printf("[backfill] from_pubkey update: %v", err)
+				return
+			}
+			if err := tx.Commit(); err != nil {
+				log.Printf("[backfill] from_pubkey commit: %v", err)
+				return
+			}
+			processed += int64(len(batch))
 		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("[backfill] from_pubkey commit: %v", err)
-			return
-		}
-		processed += int64(len(batch))
-		if progress != nil {
-			progress(total, processed, false)
-		}
-		if len(batch) < chunkSize {
-			break
-		}
-		if yieldDuration > 0 {
+		after = last
+		report(false)
+		if after < ceiling.Int64 && yieldDuration > 0 {
 			time.Sleep(yieldDuration)
 		}
 	}
 	log.Printf("[backfill] from_pubkey complete: %d rows processed", processed)
-	if progress != nil {
-		progress(total, processed, true)
-	}
+	report(true)
 }
 
 // extractPubkeyFromAdvertJSON parses an ADVERT decoded_json blob and

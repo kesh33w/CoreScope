@@ -17,6 +17,7 @@ node tests/unit/test-a11y-1996-scope-audit-chips.js
 node tests/unit/test-a11y-axe-1668-selftest.js
 node tests/unit/test-a11y-axe-routes-coverage.js
 node tests/unit/test-admin-dashboard-ui.js
+node tests/unit/test-observation-cleanup.js
 node tests/unit/test-aging.js
 node tests/unit/test-analytics-channels-integration.js
 node tests/unit/test-anl1-tooltip-render.js

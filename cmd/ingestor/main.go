@@ -165,7 +165,8 @@ func main() {
 	// Connect to each MQTT source
 	var clients []mqtt.Client
 	connectedCount := 0
-	for _, source := range sources {
+	for sourceIndex, source := range sources {
+		source.frequencySourceID = fmt.Sprintf("source-%d", sourceIndex)
 		tag := source.Name
 		if tag == "" {
 			tag = source.Broker
@@ -1024,6 +1025,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 	// is region-independent and should be accepted from all observers regardless of
 	// which IATA regions are configured for packet ingestion.
 	if len(parts) >= 4 && parts[3] == "status" {
+		cfg.recordObserverFrequency(source.frequencyIdentity(tag), parts, msg, m.Retained(), time.Now())
 		observerID := observerIDForMessage(parts, msg)
 		name, _ := msg["origin"].(string)
 		name = clampObserverField(name, maxObserverTextLen)
@@ -1099,6 +1101,14 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		if !matched {
 			return
 		}
+	}
+
+	// Frequency policy applies only to receptions, not status needed to learn retunes.
+	if reason := cfg.observerFrequencyDecision(source.frequencyIdentity(tag), parts, msg, time.Now()); reason != "" {
+		if cfg.warnFrequencyDrop(parts[1], time.Now()) {
+			log.Printf("MQTT [%s] [frequency-filter] region=%s observer=%.8s dropping %s frequency; further warnings throttled for 1m", tag, parts[1], parts[2], reason)
+		}
+		return
 	}
 
 	// Format 1: Raw packet (meshcoretomqtt / Cisien format)

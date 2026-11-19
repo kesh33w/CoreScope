@@ -1,5 +1,7 @@
 # CoreScope
 
+**New: observer frequency filtering.** Define independent expected receiver frequencies for any IATA region before observations enter analytics. Add, edit, or remove multiple rules in Customization → Frequency, with per-region tolerance and unknown/stale metadata handling. [Behavior and limits](OBSERVER_FREQUENCY_FILTER.md).
+
 This is the SacMesh fork of [upstream CoreScope](https://github.com/Kpa-clawbot/CoreScope), based on v3.17.0. The fork release is `v3.17.0+sacmesh.1`. See [fork maintenance](docs/fork-maintenance.md) for the retained changes and upgrade checks. Badges below report upstream CI, not this fork's validation.
 
 [![Go Server Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/go-server-coverage.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)

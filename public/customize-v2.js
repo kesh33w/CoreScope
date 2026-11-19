@@ -1154,6 +1154,14 @@
       '.cust-panel{display:none;padding:12px 16px}',
       '.cust-panel.active{display:block}',
       '.cust-field{margin-bottom:12px}',
+      '[data-panel="frequency"] input[type="number"],[data-panel="frequency"] input[type="password"]{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--input-bg);color:var(--text);box-sizing:border-box}',
+      '[data-panel="frequency"] button{padding:7px 12px;margin:4px 4px 4px 0;background:var(--surface-1);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px}',
+      '[data-panel="frequency"] button:disabled{opacity:.5;cursor:default}',
+      '[data-panel="frequency"] #cv2-freq-save{background:var(--accent);color:#fff}',
+      '[data-panel="frequency"] .cv2-freq-remove{color:var(--status-red)}',
+      '[data-panel="frequency"] p{font-size:12px;line-height:1.5;margin:8px 0}',
+      '[data-panel="frequency"] legend{font-size:12px;font-weight:600}',
+
       '.cust-field label{display:block;font-size:12px;font-weight:600;margin-bottom:3px;color:var(--text)}',
       '.cust-field input[type="text"],.cust-field textarea{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--input-bg);color:var(--text);box-sizing:border-box}',
       '.cust-field input[type="text"]:focus,.cust-field textarea:focus{outline:none;border-color:var(--accent)}',
@@ -1211,6 +1219,8 @@
       { id: 'home', glyph: 'ph:house', title: 'Home', badge: _tabBadge('home') },
       { id: 'display', glyph: 'ph:monitor', title: 'Display', badge: (function () { var n = _countOverrides('timestamps') + (_isOverridden(null, 'distanceUnit') ? 1 : 0); return n ? ' <span class="cv2-tab-badge">' + n + '</span>' : ''; })() },
       { id: 'geofilter', glyph: 'ph:map-trifold', title: 'GeoFilter' },
+      { id: 'frequency', glyph: 'ph:radio', title: 'Frequency' },
+      { id: 'cleanup', glyph: 'ph:trash', title: 'Cleanup' },
       { id: 'export', glyph: 'ph:download-simple', title: 'Export' }
     ];
     // #1508 — operators can hide individual tabs server-side via
@@ -1740,6 +1750,123 @@
     '</div>';
   }
 
+  function _frequencyLink(open) {
+    if (!window.location || !window.history) return;
+    var hash = window.location.hash || '#/';
+    var split = hash.split('?');
+    var params = new URLSearchParams(split[1] || '');
+    if (open) params.set('customizer', _activeTab); else params.delete('customizer');
+    window.history.replaceState(null, '', split[0] + (params.toString() ? '?' + params.toString() : ''));
+  }
+
+  function _renderFrequencyFilter() {
+    return '<div class="cust-panel' + (_activeTab === 'frequency' ? ' active' : '') + '" data-panel="frequency">' +
+      '<p class="cust-section-title">Observer frequency filters</p>' +
+      '<p>Choose the expected receiver frequency for each three-letter observer region. Only configured regions are filtered. Status reports remain available for retuning; historical data is not removed.</p>' +
+      '<p id="cv2-freq-status" role="status">Loading saved policy…</p>' +
+      '<fieldset id="cv2-freq-fields" disabled style="border:0;padding:0">' +
+      '<div id="cv2-freq-rules"></div><button id="cv2-freq-add" type="button">Add region</button> ' +
+      '<button id="cv2-freq-reset" type="button">Discard unsaved changes</button>' +
+      '<p>Missing or stale frequency information is accepted unless a rule’s strict option is checked. Removing a rule disables filtering for that region after saving and restarting.</p>' +
+      '<div class="cust-field"><label for="cv2-freq-key">Server API key (not needed when signed in as admin)</label><input id="cv2-freq-key" type="password" autocomplete="off"></div>' +
+      '<button id="cv2-freq-save" type="button">Save to server</button></fieldset>' +
+      '<p><strong>Restart required:</strong> saving changes config.json only. Restart the ingestor to apply it. The controls show saved settings, not verified running state.</p></div>';
+  }
+
+  function _initFrequencyFilter(container) {
+    var status = container.querySelector('#cv2-freq-status');
+    var fields = container.querySelector('#cv2-freq-fields');
+    var button = container.querySelector('#cv2-freq-save');
+    var list = container.querySelector('#cv2-freq-rules');
+    var add = container.querySelector('#cv2-freq-add');
+    if (!status || !button || !list) return;
+    var rules = null;
+    var sequence = 0;
+    function dirty() { status.textContent = 'Unsaved changes. Save, then restart the ingestor to apply them.'; }
+    function row(region, rule) {
+      var box = document.createElement('fieldset');
+      box.className = 'cv2-freq-rule';
+      box.style.cssText = 'border:1px solid var(--border);padding:10px;margin:10px 0';
+      var legend = document.createElement('legend');
+      legend.textContent = 'Region frequency rule'; box.appendChild(legend);
+      function input(name, label, value, type, attrs) {
+        var wrap = document.createElement('div'); wrap.className = 'cust-field';
+        var el = document.createElement('input'); el.type = type;
+        el.id = 'cv2-freq-rule-' + (++sequence); el.dataset.field = name;
+        if (type === 'checkbox') el.checked = !!value; else el.value = value;
+        Object.keys(attrs || {}).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+        var lab = document.createElement('label'); lab.htmlFor = el.id; lab.textContent = label;
+        wrap.appendChild(lab); wrap.appendChild(el); box.appendChild(wrap);
+      }
+      input('region', 'Region (three letters, e.g. SMF)', region, 'text', { maxlength: 3, pattern: '[A-Za-z]{3}', autocomplete: 'off' });
+      input('mhz', 'Expected frequency (MHz)', rule.mhz === undefined ? '' : rule.mhz, 'number', { min: 100, max: 2500, step: 'any' });
+      input('toleranceKHz', 'Tolerance (kHz)', rule.toleranceKHz || 0.5, 'number', { min: 0.001, max: 100, step: 'any' });
+      input('maxStatusAgeSec', 'Maximum status age (seconds)', rule.maxStatusAgeSec || 1800, 'number', { min: 1, max: 86400, step: 1 });
+      input('dropUnknown', 'Strict: also drop missing or stale frequency information', rule.dropUnknown, 'checkbox');
+      var remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Remove region'; remove.className = 'cv2-freq-remove';
+      remove.addEventListener('click', function () { box.remove(); add.disabled = false; dirty(); });
+      box.appendChild(remove); list.appendChild(box);
+      add.disabled = list.children.length >= 64;
+    }
+    function renderSaved() {
+      list.replaceChildren();
+      Object.keys(rules).sort().forEach(function (region) { row(region, rules[region]); });
+      add.disabled = list.children.length >= 64;
+    }
+    list.addEventListener('input', dirty);
+    add.addEventListener('click', function () {
+      if (list.children.length >= 64) return;
+      row('', {}); dirty(); list.lastElementChild.querySelector('input').focus();
+    });
+    container.querySelector('#cv2-freq-reset').addEventListener('click', function () {
+      if (!rules) return;
+      renderSaved(); status.textContent = 'Restored saved policy. Running state is not confirmed here.';
+    });
+    fetch('/api/config/observer-frequency', { cache: 'no-store' }).then(function (response) {
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      return response.json();
+    }).then(function (data) {
+      if (!status.isConnected) return;
+      rules = data.rules || {}; renderSaved(); fields.disabled = false;
+      status.textContent = 'Saved policy: ' + Object.keys(rules).length + ' region rule(s). Running state is not confirmed here.';
+    }).catch(function (error) { status.textContent = 'Could not load policy: ' + error.message; });
+    button.addEventListener('click', function () {
+      if (!rules || fields.disabled) return;
+      var next = Object.create(null);
+      var boxes = list.querySelectorAll('.cv2-freq-rule');
+      for (var i = 0; i < boxes.length; i++) {
+        var box = boxes[i];
+        function value(name) { return box.querySelector('[data-field="' + name + '"]').value; }
+        var region = value('region').trim().toUpperCase();
+        var mhz = Number(value('mhz'));
+        var tolerance = Number(value('toleranceKHz'));
+        var age = Number(value('maxStatusAgeSec'));
+        if (!/^[A-Z]{3}$/.test(region) || Object.prototype.hasOwnProperty.call(next, region)) {
+          status.textContent = 'Each region must be three letters and appear only once.'; return;
+        }
+        if (!Number.isFinite(mhz) || mhz < 100 || mhz > 2500 || !Number.isFinite(tolerance) || tolerance <= 0 || tolerance > 100 || !Number.isInteger(age) || age < 1 || age > 86400) {
+          status.textContent = region + ': enter valid frequency, tolerance and status age values.'; return;
+        }
+        next[region] = { mhz: mhz, toleranceKHz: tolerance, maxStatusAgeSec: age, dropUnknown: box.querySelector('[data-field="dropUnknown"]').checked };
+      }
+      var headers = { 'Content-Type': 'application/json' };
+      if (window.CSAuth && window.CSAuth.isAdmin()) Object.assign(headers, window.CSAuth.adminHeaders());
+      else {
+        var key = container.querySelector('#cv2-freq-key').value;
+        if (!key) { status.textContent = 'Sign in as an admin or enter the server API key.'; return; }
+        headers['X-API-Key'] = key;
+      }
+      fields.disabled = true;
+      fetch('/api/config/observer-frequency', { method: 'PUT', headers: headers, body: JSON.stringify({ rules: next }) }).then(function (response) {
+        return response.json().then(function (data) { if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status)); return data; });
+      }).then(function (data) {
+        rules = data.rules; renderSaved();
+        status.textContent = 'Saved. Restart the ingestor to apply this policy; it is not active merely because it was saved.';
+        container.querySelector('#cv2-freq-key').value = '';
+      }).catch(function (error) { status.textContent = 'Save failed: ' + error.message; }).finally(function () { fields.disabled = false; });
+    });
+  }
+
   function _renderGeoFilter() {
     return '<div class="cust-panel' + (_activeTab === 'geofilter' ? ' active' : '') + '" data-panel="geofilter">' +
       '<p class="cust-section-title">Geographic Filter</p>' +
@@ -2203,6 +2330,7 @@
   }
 
   function _renderPanel(container) {
+    if (window.ObservationCleanup) window.ObservationCleanup.dispose();
     container.innerHTML =
       _renderTabs() +
       '<div class="cust-body">' +
@@ -2212,9 +2340,17 @@
         _renderHome() +
         _renderDisplay() +
         _renderGeoFilter() +
+        _renderFrequencyFilter() +
+        (window.ObservationCleanup ? window.ObservationCleanup.render(_activeTab === 'cleanup') : '') +
         _renderExport() +
       '</div>';
     _bindEvents(container);
+    if (_panelEl) {
+      var banner = _panelEl.querySelector('.cv2-local-banner');
+      if (banner) banner.textContent = _activeTab === 'cleanup' ? 'Operator action: bulk historical observation cleanup with recoverable archive. This affects server data.' : _activeTab === 'frequency' ? 'Operator setting: saves to the server and affects all incoming observations after ingestor restart.' : "Visual settings are saved in your browser. GeoFilter and Frequency controls save to the server.";
+      var footer = _panelEl.querySelector('.cv2-footer');
+      if (footer) footer.style.display = (_activeTab === 'frequency' || _activeTab === 'cleanup') ? 'none' : '';
+    }
   }
 
   /** Remove phantom overrides that match server defaults on startup */
@@ -2282,12 +2418,15 @@
       btn.addEventListener('click', function () {
         if (_gfMap) { _gfMap.remove(); _gfMap = null; _gfMarkers = []; _gfPolygon = null; _gfClosingLine = null; } if (_gfModalMap) { _gfModalMap.remove(); _gfModalMap = null; } var _ov = document.getElementById('cv2-gf-modal-overlay'); if (_ov) _ov.remove();
         _activeTab = btn.dataset.tab;
+        _frequencyLink(_activeTab === 'frequency' || _activeTab === 'cleanup');
         _renderPanel(container);
       });
     });
 
     // GeoFilter tab init
     if (_activeTab === 'geofilter') _initGeoFilterTab(container);
+    if (_activeTab === 'frequency') _initFrequencyFilter(container);
+    if (_activeTab === 'cleanup' && window.ObservationCleanup) window.ObservationCleanup.init(container);
 
     // #1361 Colorblind preset radio — switches preset via MeshCorePresets.applyPreset
     // #1446 — empty-value radio = "no preset" → clearPreset(), then re-run
@@ -2701,6 +2840,8 @@
   function toggle() {
     if (_panelEl) {
       _panelEl.classList.toggle('hidden');
+      _frequencyLink(!_panelEl.classList.contains('hidden') && (_activeTab === 'frequency' || _activeTab === 'cleanup'));
+      if (_panelEl.classList.contains('hidden') && window.ObservationCleanup) window.ObservationCleanup.dispose();
       if (!_panelEl.classList.contains('hidden')) _refreshPanel();
       return;
     }
@@ -2717,6 +2858,8 @@
     _panelEl.querySelector('.cust-close').addEventListener('click', function () {
       if (_gfMap) { _gfMap.remove(); _gfMap = null; _gfMarkers = []; _gfPolygon = null; _gfClosingLine = null; } if (_gfModalMap) { _gfModalMap.remove(); _gfModalMap = null; } var _ov = document.getElementById('cv2-gf-modal-overlay'); if (_ov) _ov.remove();
       _panelEl.classList.add('hidden');
+      _frequencyLink(false);
+      if (window.ObservationCleanup) window.ObservationCleanup.dispose();
     });
 
     // Drag support
@@ -2802,6 +2945,18 @@
   document.addEventListener('DOMContentLoaded', function () {
     var btn = document.getElementById('customizeToggle');
     if (btn) btn.addEventListener('click', toggle);
+    var deepTab = window.location && new URLSearchParams((window.location.hash.split('?')[1] || '')).get('customizer');
+    if (deepTab === 'frequency' || deepTab === 'cleanup') { _activeTab = deepTab; toggle(); }
+    window.addEventListener('hashchange', function () {
+      var requested = new URLSearchParams((window.location.hash.split('?')[1] || '')).get('customizer');
+      if (requested === 'frequency' || requested === 'cleanup') {
+        _activeTab = requested;
+        if (!_panelEl || _panelEl.classList.contains('hidden')) toggle(); else _refreshPanel();
+      } else if (_panelEl && (_activeTab === 'frequency' || _activeTab === 'cleanup')) {
+        _panelEl.classList.add('hidden');
+        if (window.ObservationCleanup) window.ObservationCleanup.dispose();
+      }
+    });
 
     // Re-apply branding from overrides once DOM is ready
     var overrides = readOverrides();
@@ -2981,6 +3136,8 @@
     isValidColor: isValidColor,
     isValidHomeUrl: isValidHomeUrl,
     isOverridden: _isOverridden,
+    _initFrequencyFilter: _initFrequencyFilter,
+    _renderFrequencyFilter: _renderFrequencyFilter,
     _gfCanEdit: _gfCanEdit,
     _gfAuthHeaders: _gfAuthHeaders,
     _gfApplyAuth: _gfApplyAuth,

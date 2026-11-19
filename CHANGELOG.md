@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add configurable observer-region reception frequency policy and admin Frequency panel, with per-radio status tracking, bounded freshness, unknown policy and no historical deletion.
+
 ## [3.17.0] - 2026-11-11
 
 See [docs/release-notes/v3.17.0.md](docs/release-notes/v3.17.0.md) for the full notes. 24 commits since v3.16.0: 11 fix, 5 docs, 4 feat, 2 test, 1 ui, 1 chore.
