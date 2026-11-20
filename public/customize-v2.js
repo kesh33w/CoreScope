@@ -50,6 +50,7 @@
     statusGreen: '--status-green', statusYellow: '--status-yellow', statusRed: '--status-red',
     statusYellowText: '--status-yellow-text', statusRedText: '--status-red-text',
     statusGreenTintText: '--status-green-tint-text',
+    betaBadgeBg: '--beta-badge-bg', betaBadgeText: '--beta-badge-text',
     surface1: '--surface-1', surface2: '--surface-2', surface3: '--surface-3',
     sectionBg: '--section-bg',
     cardBg: '--card-bg', contentBg: '--content-bg', detailBg: '--detail-bg',
@@ -1822,7 +1823,7 @@
       if (!rules) return;
       renderSaved(); status.textContent = 'Restored saved policy. Running state is not confirmed here.';
     });
-    fetch('/api/config/observer-frequency', { cache: 'no-store' }).then(function (response) {
+    CSApi.fetch('/api/config/observer-frequency', { cache: 'no-store' }).then(function (response) {
       if (!response.ok) throw new Error('HTTP ' + response.status);
       return response.json();
     }).then(function (data) {
@@ -1857,7 +1858,7 @@
         headers['X-API-Key'] = key;
       }
       fields.disabled = true;
-      fetch('/api/config/observer-frequency', { method: 'PUT', headers: headers, body: JSON.stringify({ rules: next }) }).then(function (response) {
+      CSApi.fetch('/api/config/observer-frequency', { method: 'PUT', headers: headers, body: JSON.stringify({ rules: next }) }).then(function (response) {
         return response.json().then(function (data) { if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status)); return data; });
       }).then(function (data) {
         rules = data.rules; renderSaved();
@@ -1876,6 +1877,7 @@
         '<div style="position:absolute;top:7px;right:7px;background:rgba(255,255,255,0.88);border-radius:4px;padding:3px 8px;font-size:11px;color:#444;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.15)"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-magnifying-glass"/></svg> click to expand</div>' +
       '</div>' +
       '<div id="cv2-gf-status" style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Loading current filter…</div>' +
+      (window.CSApi && CSApi.anonymous ? CSBeta.classicOnlyHtml('Editing the geographic filter') : '') +
       // Edit controls — hidden until server confirms write access (writeEnabled=true)
       '<div id="cv2-gf-edit" style="display:none">' +
         '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">' +
@@ -2090,7 +2092,10 @@
 
   // The editor is usable with a write-capable API key (gf.writeEnabled) or an
   // admin session (server: requireAdmin accepts both).
+  // An anonymous static build cannot send the API key or the session in a
+  // way the server accepts cross-origin, so it never offers the editor.
   function _gfCanEdit(gf, csAuth) {
+    if (window.CSApi && CSApi.anonymous) return false;
     return !!((gf && gf.writeEnabled) || (csAuth && csAuth.isAdmin()));
   }
 
@@ -2131,7 +2136,7 @@
     var headers = _gfAuthHeaders(container, { 'Content-Type': 'application/json' }, window.CSAuth);
     if (!headers) { _gfMsg(container, 'API key required to save.', false); return; }
     var bufferKm = parseFloat((container.querySelector('#cv2-gf-buffer') || {}).value) || 0;
-    fetch('/api/config/geo-filter', {
+    CSApi.fetch('/api/config/geo-filter', {
       method: 'PUT',
       headers: headers,
       body: JSON.stringify({ polygon: _gfPoints, bufferKm: bufferKm })
@@ -2147,7 +2152,7 @@
     var headers = _gfAuthHeaders(container, { 'Content-Type': 'application/json' }, window.CSAuth);
     if (!headers) { _gfMsg(container, 'API key required.', false); return; }
     if (!confirm('Remove geo filter? All nodes will be allowed through.')) return;
-    fetch('/api/config/geo-filter', {
+    CSApi.fetch('/api/config/geo-filter', {
       method: 'PUT',
       headers: headers,
       body: JSON.stringify({ polygon: null })
@@ -2176,7 +2181,7 @@
     if (!headers) { _gfPruneMsg(container, 'API key required.', false); return; }
     var btn = container.querySelector('#cv2-gf-prune-preview');
     if (btn) btn.textContent = 'Loading…';
-    fetch('/api/admin/prune-geo-filter', {
+    CSApi.fetch('/api/admin/prune-geo-filter', {
       method: 'POST',
       headers: headers
     }).then(function (r) {
@@ -2215,7 +2220,7 @@
     var count = _gfPruneNodes.length;
     if (!confirm('Delete ' + count + ' node' + (count !== 1 ? 's' : '') + ' from the database? This cannot be undone.')) return;
     var pubkeys = _gfPruneNodes.map(function (n) { return n.pubkey; });
-    fetch('/api/admin/prune-geo-filter?confirm=true', {
+    CSApi.fetch('/api/admin/prune-geo-filter?confirm=true', {
       method: 'POST',
       headers: headers,
       body: JSON.stringify({ pubkeys: pubkeys })

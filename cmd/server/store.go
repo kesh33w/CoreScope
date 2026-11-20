@@ -250,6 +250,14 @@ type PacketStore struct {
 	txRewriteMu     sync.Mutex
 	txRewriteCursor int64
 
+	// Poller start cursors: MAX(id) of transmissions / observations, read in
+	// NewPacketStore before any load query. A row above a mark may have been
+	// committed after the load's snapshot, so the poller re-reads from there.
+	// Written once before the store is shared; read-only afterwards.
+	startupTxMark  int
+	startupObsMark int
+	startupMarksOK bool // false: no conn, or a MAX query failed
+
 	mu             sync.RWMutex
 	db             *DB
 	packets        []*StoreTx                  // sorted by first_seen ASC (oldest first; newest at tail)
@@ -544,9 +552,6 @@ type PacketStore struct {
 	// Hot startup atomic gates — see contract below.
 	//
 	// Contract / ordering invariant (PR #1187):
-	//   * hashMigrationComplete (set by migrateContentHashesAsync) gates
-	//     content-hash–dependent code paths (e.g. dedup correctness on the
-	//     write side). Set true ONLY after the migration loop finishes.
 	//   * backgroundLoadDone is set true exactly once, after
 	//     loadBackgroundChunks finishes its loop AND its post-load index
 	//     rebuild. It gates "hot startup has finished filling
@@ -594,9 +599,6 @@ type PacketStore struct {
 	// loadBackgroundChunks after the chunk walk; surfaced via the typed
 	// perf payload for prod observability.
 	loadCoverageRatio float64
-
-	// Async hash migration state: set after migrateContentHashesAsync completes.
-	hashMigrationComplete atomic.Bool
 
 	// Chunked startup load state (#1009). LoadChunked closes
 	// firstChunkReady after the first chunk is merged so the HTTP
@@ -649,7 +651,21 @@ type PacketStore struct {
 	// ordering tests to capture the bg-loader entry timestamp/signal
 	// without polling. See runstartup_load_test.go.
 	bgLoaderEntryHook func()
+	// Test-only hooks for the poller/load interleaving tests. Nil in
+	// production. chunkQueriedHook fires in LoadChunked after a chunk's
+	// query returns, before its rows are merged (chunk counts from 1).
+	// obsPollHook fires in ingestNewObservations after the feeds are
+	// polled and again when it returns.
+	chunkQueriedHook func(chunk int)
+	obsPollHook      func(stage obsPollStage)
 }
+
+type obsPollStage int
+
+const (
+	obsPollAfterFeeds obsPollStage = iota
+	obsPollDone
+)
 
 // Precomputed distance records for fast analytics aggregation.
 type distHopRecord struct {
@@ -857,6 +873,11 @@ func NewPacketStore(db *DB, cfg *PacketStoreConfig, cacheTTLs ...map[string]inte
 			ps.invCooldown = v
 		}
 	}
+	// Capture BEFORE loading any packets: the load reads each chunk in its own
+	// snapshot, so a row committed while it runs is only safe if the poller
+	// starts at or below it. One writer commits ids in order, so everything
+	// the load can miss lies above these marks (see Poller.startCursors).
+	ps.startupTxMark, ps.startupObsMark, ps.startupMarksOK = db.highWaterMarks()
 	// Capture BEFORE loading any packets. Evidence arriving during startup
 	// remains above this watermark; each loaded tx also reads its full mask.
 	if db.advertEvidencePresent() {
@@ -3038,9 +3059,23 @@ func (s *PacketStore) queryMultiNodePacketsLocked(resolved []string, limit, offs
 	return &PacketResult{Packets: packets, Total: total}, jobs
 }
 
+// wsPacketMaps is a batch of broadcast-ready packet maps from the ingest paths.
+type wsPacketMaps []map[string]interface{}
+
 // IngestNewFromDB loads new transmissions from SQLite into memory and returns
 // broadcast-ready maps plus the new max transmission ID.
-func (s *PacketStore) IngestNewFromDB(sinceID, limit int) ([]map[string]interface{}, int) {
+func (s *PacketStore) IngestNewFromDB(sinceID, limit int) (wsPacketMaps, int) {
+	out, newMax, err := s.ingestNewFromDB(sinceID, limit)
+	if err != nil {
+		log.Printf("[store] %v", err)
+	}
+	return out, newMax
+}
+
+// ingestNewFromDB is IngestNewFromDB reporting a failed read. On error the
+// returned max is sinceID, so the caller's cursor stays put and the poll is
+// retried.
+func (s *PacketStore) ingestNewFromDB(sinceID, limit int) (wsPacketMaps, int, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -3082,8 +3117,7 @@ func (s *PacketStore) IngestNewFromDB(sinceID, limit int) ([]map[string]interfac
 
 	rows, err := s.db.conn.Query(querySQL, sinceID)
 	if err != nil {
-		log.Printf("[store] ingest query error: %v", err)
-		return nil, sinceID
+		return nil, sinceID, fmt.Errorf("ingest query error: %w", err)
 	}
 	defer rows.Close()
 
@@ -3164,11 +3198,11 @@ func (s *PacketStore) IngestNewFromDB(sinceID, limit int) ([]map[string]interfac
 		tempRows = append(tempRows, tr)
 	}
 
-	if len(tempRows) == 0 {
-		return nil, sinceID
-	}
 	if err := rows.Err(); err != nil {
-		return nil, sinceID
+		return nil, sinceID, fmt.Errorf("ingest read error: %w", err)
+	}
+	if len(tempRows) == 0 {
+		return nil, sinceID, nil
 	}
 	rows.Close()
 	s.advertEvidenceMu.Lock()
@@ -3181,8 +3215,7 @@ func (s *PacketStore) IngestNewFromDB(sinceID, limit int) ([]map[string]interfac
 	}
 	masks, err := s.db.advertEvidenceForIDs(ids)
 	if err != nil {
-		log.Printf("[store] load advert evidence: %v", err)
-		return nil, sinceID
+		return nil, sinceID, fmt.Errorf("load advert evidence: %w", err)
 	}
 
 	// Now lock and merge into store
@@ -3445,16 +3478,31 @@ func (s *PacketStore) IngestNewFromDB(sinceID, limit int) ([]map[string]interfac
 	if evidenceChanged {
 		s.invalidateAdvertEvidence()
 	}
-	return result, newMaxID
+	return result, newMaxID, nil
 }
 
 // IngestNewObservations loads new observations for transmissions already in the
 // store. This catches observations that arrive after IngestNewFromDB has already
 // advanced past the transmission's ID (fixes #174).
-func (s *PacketStore) IngestNewObservations(sinceObsID, limit int) []map[string]interface{} {
+func (s *PacketStore) IngestNewObservations(sinceObsID, limit int) wsPacketMaps {
+	out, err := s.ingestNewObservations(sinceObsID, limit)
+	if err != nil {
+		log.Printf("[store] %v", err)
+	}
+	return out
+}
+
+// ingestNewObservations is IngestNewObservations reporting a failed read, so
+// the poller can keep its cursor and retry instead of passing rows it never
+// saw. A row that fails to scan is still skipped.
+func (s *PacketStore) ingestNewObservations(sinceObsID, limit int) (wsPacketMaps, error) {
 	// Must run even when observation IDs/timestamps have not changed.
 	s.refreshAdvertEvidence()
 	s.refreshTxRewrites() // #2107: rewrites never move IDs, so poll them here too
+	if s.obsPollHook != nil {
+		s.obsPollHook(obsPollAfterFeeds)
+		defer s.obsPollHook(obsPollDone)
+	}
 	if limit <= 0 {
 		limit = 500
 	}
@@ -3484,8 +3532,7 @@ func (s *PacketStore) IngestNewObservations(sinceObsID, limit int) []map[string]
 
 	rows, err := s.db.conn.Query(querySQL, sinceObsID, limit)
 	if err != nil {
-		log.Printf("[store] ingest observations query error: %v", err)
-		return nil
+		return nil, fmt.Errorf("ingest observations query error: %w", err)
 	}
 	defer rows.Close()
 
@@ -3536,8 +3583,11 @@ func (s *PacketStore) IngestNewObservations(sinceObsID, limit int) []map[string]
 		})
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ingest observations read error: %w", err)
+	}
 	if len(obsRows) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	s.mu.Lock()
@@ -3740,7 +3790,7 @@ func (s *PacketStore) IngestNewObservations(sinceObsID, limit int) []map[string]
 	_ = pm
 	_ = graphRef
 
-	return broadcastMaps
+	return broadcastMaps, nil
 }
 
 // MaxTransmissionID returns the highest transmission ID in the store.
@@ -3748,6 +3798,12 @@ func (s *PacketStore) MaxTransmissionID() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.maxTxID
+}
+
+// StartupMarks returns the transmission and observation high-water marks taken
+// before the startup load, and whether both queries succeeded.
+func (s *PacketStore) StartupMarks() (txMark, obsMark int, ok bool) {
+	return s.startupTxMark, s.startupObsMark, s.startupMarksOK
 }
 
 // MaxObservationID returns the highest observation ID in the store.
@@ -4943,12 +4999,10 @@ func (s *PacketStore) updateDistanceIndexForTxs(txs []*StoreTx) {
 	for _, tx := range txs {
 		removeSet[tx] = true
 	}
-	s.distHops = slices.DeleteFunc(slices.Clone(s.distHops), func(r distHopRecord) bool {
-		return removeSet[r.tx]
-	})
-	s.distPaths = slices.DeleteFunc(slices.Clone(s.distPaths), func(r distPathRecord) bool {
-		return removeSet[r.tx]
-	})
+	// Distance readers borrow these arrays after releasing s.mu. Copy here,
+	// once per changed-path batch, so their O(1) snapshots remain immutable.
+	s.distHops = slices.DeleteFunc(slices.Clone(s.distHops), func(r distHopRecord) bool { return removeSet[r.tx] })
+	s.distPaths = slices.DeleteFunc(slices.Clone(s.distPaths), func(r distPathRecord) bool { return removeSet[r.tx] })
 
 	// Build lookup maps once.
 	allNodes, pm := s.getCachedNodesAndPM()
@@ -5211,15 +5265,15 @@ func (s *PacketStore) trackedMemoryMB() float64 {
 	return float64(s.trackedBytes) / 1048576.0
 }
 
-// EvictStaleWithRP retains the existing entry point for callers with a SQL
-// batch. Eviction now walks the actual in-memory indexes, so it does not need
-// (or trust) persisted resolved paths to discover references. Must hold s.mu.
+// EvictStaleWithRP retains the old entry point for callers with a prefetched
+// batch. Cleanup uses actual in-memory membership; SQL paths may differ from it.
+// Must be called under s.mu.Lock.
 func (s *PacketStore) EvictStaleWithRP(_ map[int][]string) int {
 	return s.evictStaleInternal()
 }
 
-// EvictStale removes packets older than the retention window and/or exceeding
-// the memory cap. Must hold s.mu for writing. Returns packets evicted.
+// EvictStale removes expired packets and their in-memory memberships without SQL.
+// Must be called under s.mu.Lock.
 func (s *PacketStore) EvictStale() int {
 	return s.evictStaleInternal()
 }
@@ -5384,7 +5438,8 @@ func (s *PacketStore) evictStaleInternal() int {
 	// DeleteFunc clears discarded pointer slots as well as shortening the
 	// slice. The GC scans the whole backing array, including beyond len.
 	for obsID := range affectedObservers {
-		filtered := slices.DeleteFunc(s.byObserver[obsID], func(o *StoreObs) bool {
+		obsList := s.byObserver[obsID]
+		filtered := slices.DeleteFunc(obsList, func(o *StoreObs) bool {
 			_, evicted := evictedObsIDs[o.ID]
 			return evicted
 		})
@@ -5395,8 +5450,9 @@ func (s *PacketStore) evictStaleInternal() int {
 		}
 	}
 	for pt := range affectedPayloadTypes {
-		filtered := slices.DeleteFunc(s.byPayloadType[pt], func(tx *StoreTx) bool {
-			_, evicted := evictedTxIDs[tx.ID]
+		ptList := s.byPayloadType[pt]
+		filtered := slices.DeleteFunc(ptList, func(t *StoreTx) bool {
+			_, evicted := evictedTxIDs[t.ID]
 			return evicted
 		})
 		if len(filtered) == 0 {
@@ -5406,17 +5462,15 @@ func (s *PacketStore) evictStaleInternal() int {
 		}
 	}
 
-	// Sweep the actual node index once per batch, like byPathHop above.
-	// Cold-load and live path resolution can add node keys that never reach
-	// observations.resolved_path (the server is read-only). A SQL-derived
-	// affected-node list misses those keys and pins evicted txs and all their
-	// observations forever. This is O(total node memberships), not one scan
-	// per evicted packet, and needs no new reverse index or DB query.
-	for nodeKey, list := range s.byNode {
-		filtered := slices.DeleteFunc(list, func(tx *StoreTx) bool {
-			_, evicted := evictedTxIDs[tx.ID]
+	// Sweep actual memberships once per batch, as for byPathHop. Server-side
+	// resolution can differ from persisted paths or have no persisted path at
+	// all. Reconstructing keys from SQL leaves uncharged packet graphs alive.
+	// Readers either hold s.mu or copy these buckets before releasing it.
+	for nodeKey, nodeList := range s.byNode {
+		filtered := slices.DeleteFunc(nodeList, func(t *StoreTx) bool {
+			_, evicted := evictedTxIDs[t.ID]
 			if evicted {
-				delete(s.nodeHashes[nodeKey], tx.ID)
+				delete(s.nodeHashes[nodeKey], t.ID)
 			}
 			return evicted
 		})
@@ -5430,25 +5484,30 @@ func (s *PacketStore) evictStaleInternal() int {
 		}
 	}
 
-	// Distance analytics readers retain slice snapshots after unlocking.
-	// Replace these arrays instead of mutating them; readers can finish on
-	// the old immutable arrays, which are then collected. DeleteFunc clears
-	// the replacement tails so the store retains only surviving records.
-	s.distHops = slices.DeleteFunc(slices.Clone(s.distHops), func(h distHopRecord) bool {
-		if h.tx == nil {
-			return false
-		}
-		_, evicted := evictedTxIDs[h.tx.ID]
-		return evicted
-	})
-	s.distPaths = slices.DeleteFunc(slices.Clone(s.distPaths), func(p distPathRecord) bool {
-		if p.tx == nil {
-			return false
-		}
-		_, evicted := evictedTxIDs[p.tx.ID]
-		return evicted
-	})
-	s.packets = slices.Delete(s.packets, 0, cutoffIdx)
+	// Remove from distance indexes — filter out records referencing evicted txs
+	evictedTxSet := make(map[*StoreTx]bool, cutoffIdx)
+	for _, tx := range evicting {
+		evictedTxSet[tx] = true
+	}
+	// Only copy arrays with evicted records. Preserve arrays borrowed by
+	// unlocked readers; deleting from the copied suffix clears retired pointers.
+	isEvictedHop := func(r distHopRecord) bool { return evictedTxSet[r.tx] }
+	if first := slices.IndexFunc(s.distHops, isEvictedHop); first >= 0 {
+		hops := slices.Clone(s.distHops)
+		filtered := slices.DeleteFunc(hops[first:], isEvictedHop)
+		s.distHops = hops[:first+len(filtered)]
+	}
+	isEvictedPath := func(r distPathRecord) bool { return evictedTxSet[r.tx] }
+	if first := slices.IndexFunc(s.distPaths, isEvictedPath); first >= 0 {
+		paths := slices.Clone(s.distPaths)
+		filtered := slices.DeleteFunc(paths[first:], isEvictedPath)
+		s.distPaths = paths[:first+len(filtered)]
+	}
+
+	// Trim packets slice
+	n := copy(s.packets, s.packets[cutoffIdx:])
+	clear(s.packets[n:])
+	s.packets = s.packets[:n]
 	s.totalObs -= evictedObs
 
 	evictCount := cutoffIdx
@@ -5475,8 +5534,8 @@ func (s *PacketStore) evictStaleInternal() int {
 	return evictCount
 }
 
-// RunEviction acquires the write lock and runs eviction. Cleanup uses the
-// in-memory indexes, so no SQL prefetch or second candidate pass is needed.
+// RunEviction acquires the write lock and runs eviction. Safe to call from
+// a goroutine. Returns evicted count.
 func (s *PacketStore) RunEviction() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -8271,8 +8330,12 @@ func (s *PacketStore) computeAnalyticsTopology(region, area string, window TimeW
 
 // --- Distance Analytics ---
 
+// earthRadiusKm is the sphere of every great-circle distance, sample and
+// earth bulge on the server (haversineKm, greatCircleSamples, analyzeLOS).
+const earthRadiusKm = 6371.0
+
 func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
-	const R = 6371.0
+	const R = earthRadiusKm
 	dLat := (lat2 - lat1) * math.Pi / 180
 	dLon := (lon2 - lon1) * math.Pi / 180
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
@@ -8320,11 +8383,24 @@ func (s *PacketStore) GetAnalyticsDistance(region, area string) map[string]inter
 	return result
 }
 
+// snapshotDistanceIndexLocked borrows immutable record arrays for an unlocked
+// reader. Path updates and eviction filter copies; appends stay beyond the
+// captured length. Hop-detail slices are immutable too. Caller holds s.mu.
+func (s *PacketStore) snapshotDistanceIndexLocked() ([]distHopRecord, []distPathRecord) {
+	return s.distHops, s.distPaths
+}
+
 func (s *PacketStore) computeAnalyticsDistance(region, area string) map[string]interface{} {
-	// Snapshot slice headers under RLock, then aggregate outside it (#1239).
-	// Writers append or replace these arrays: eviction and live-path updates
-	// copy before filtering, so published record values remain immutable.
-	// Readers can safely finish using old arrays, then release them to GC.
+	// #1239: hold s.mu.RLock() only long enough to (a) snapshot the
+	// distHops/distPaths slice headers and (b) build the region match
+	// set (which reads tx.Observations, a field mutated by ingest under
+	// s.mu.Lock). All filtering, sorting, deduping, histogram building
+	// and category stats run on locally-captured slices OUTSIDE the
+	// lock so concurrent ingest writers are not blocked by readers.
+	//
+	// Safety: snapshot slice headers are O(1). Ingest appends beyond the
+	// captured length; path updates and eviction filter copies, never mutate
+	// these borrowed backing arrays. Hop-detail slices are immutable too.
 	var regionObs map[string]bool
 	if region != "" {
 		// resolveRegionObservers uses its own mutex (regionObsMu)
@@ -8337,8 +8413,7 @@ func (s *PacketStore) computeAnalyticsDistance(region, area string) map[string]i
 	}
 
 	s.mu.RLock()
-	hopsSnap := s.distHops
-	pathsSnap := s.distPaths
+	hopsSnap, pathsSnap := s.snapshotDistanceIndexLocked()
 
 	// Build region match set INSIDE the lock — touches tx.Observations
 	// (slice header mutated by ingest). For non-region calls (the common
