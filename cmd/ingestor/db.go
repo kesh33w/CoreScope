@@ -89,6 +89,7 @@ type Store struct {
 	stmtInsertObservationRadio *sql.Stmt // #1869, sparse rx_radio_id
 	stmtInsertAdvertEvidence   *sql.Stmt
 	hopBackfillCancel          context.CancelFunc // stops the observation_hops backfill on Close
+	stopBatchFlusher           func()             // batch_commit.go ticker; nil when off
 	hopIndexDays               int                // retention.hopIndexDays; 0 = no hop index (see ConfigureObservationHops)
 	hopMaintMu                 sync.Mutex         // serializes the hop index backfill and trim
 	stmtUpsertNode             *sql.Stmt
@@ -150,6 +151,17 @@ func OpenStoreWithInterval(dbPath string, sampleIntervalSec int) (*Store, error)
 // OpenStoreWithIntervalAndSynchronous opens the ingestor writer with an
 // explicit durability mode. Empty means FULL, preserving existing callers.
 func OpenStoreWithIntervalAndSynchronous(dbPath string, sampleIntervalSec int, synchronous string) (*Store, error) {
+	return OpenStoreWithBatchCommit(dbPath, sampleIntervalSec, synchronous, 0, 0)
+}
+
+// testBatchCommit lets the test suite run every store through grouped
+// commits (CORESCOPE_TEST_BATCH_COMMIT_MS, see batch_commit_test.go). Always 0
+// in production.
+var testBatchCommit time.Duration
+
+// OpenStoreWithBatchCommit also groups writer commits into one per
+// batchCommit (batch_commit.go). 0 keeps one commit per write.
+func OpenStoreWithBatchCommit(dbPath string, sampleIntervalSec int, synchronous string, batchCommit time.Duration, checkpointPages int) (*Store, error) {
 	dsn, err := dbschema.WriterDSNWithSynchronous(dbPath, synchronous)
 	if err != nil {
 		return nil, err
@@ -159,7 +171,15 @@ func OpenStoreWithIntervalAndSynchronous(dbPath string, sampleIntervalSec int, s
 		return nil, fmt.Errorf("creating data dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dsn)
+	if batchCommit == 0 {
+		batchCommit = testBatchCommit
+	}
+	var db *sql.DB
+	if batchCommit > 0 {
+		db, err = openBatchedDB(dsn, batchCommit, checkpointPages)
+	} else {
+		db, err = sql.Open("sqlite3", dsn)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
@@ -187,6 +207,10 @@ func OpenStoreWithIntervalAndSynchronous(dbPath string, sampleIntervalSec int, s
 	}
 
 	s := &Store{db: db, path: dbPath, sampleIntervalSec: sampleIntervalSec}
+	if batchCommit > 0 {
+		log.Printf("SQLite batch commits: one commit per %s (db.batchCommitMs), wal_autocheckpoint=%d (0 = default)", batchCommit, checkpointPages)
+		s.stopBatchFlusher = startBatchFlusher(db, batchCommit)
+	}
 	if err := s.prepareStatements(); err != nil {
 		return nil, fmt.Errorf("preparing statements: %w", err)
 	}
@@ -1566,7 +1590,10 @@ func (s *Store) Close() error {
 		s.hopBackfillCancel()
 	}
 	s.backfillWg.Wait()
-	s.Checkpoint()
+	if s.stopBatchFlusher != nil {
+		s.stopBatchFlusher()
+	}
+	s.Checkpoint() // a PRAGMA: commits any open batch first
 	return s.db.Close()
 }
 
