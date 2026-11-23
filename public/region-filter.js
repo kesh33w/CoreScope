@@ -304,6 +304,9 @@
     if (container._regionCleanup) { container._regionCleanup(); container._regionCleanup = null; }
 
     var codes = Object.keys(_regions);
+    // A whole-number frequency ("911") is an integer-like key, which JS lists
+    // before every other key: sort numerically instead.
+    if (_byFrequency) codes.sort(function (a, b) { return parseFloat(a) - parseFloat(b); });
     if (codes.length < 2) {
       container.innerHTML = '';
       container.style.display = 'none';

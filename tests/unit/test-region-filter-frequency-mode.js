@@ -79,6 +79,18 @@ const IATA = {
     assert.doesNotMatch(c.innerHTML, /Region:/);
   });
 
+  await test('frequencies are listed in numeric order, whole MHz included', async () => {
+    const rf = buildCtx({
+      '/api/config/regions': { '927.875': '927.875 MHz', '911': '911 MHz', '909.875': '909.875 MHz' },
+      '/api/config/region-quick-picks': { quickPicks: [], mode: 'frequency' },
+    });
+    await rf.fetchRegions();
+    const c = container();
+    rf.render(c);
+    const order = [...c.innerHTML.matchAll(/data-region="([\d.]+)"/g)].map(m => m[1]);
+    assert.deepStrictEqual(order, ['909.875', '911', '927.875']);
+  });
+
   await test('iata mode keeps the Region label', async () => {
     const rf = buildCtx(IATA);
     await rf.fetchRegions();
