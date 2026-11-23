@@ -59,7 +59,7 @@ HOST_EXTLDFLAGS   := -extldflags '$(STACK_LDFLAG)'
 HOST_TEST_LDFLAGS := -ldflags=-extldflags=$(STACK_LDFLAG)
 endif
 
-CMDS              := server ingestor decrypt migrate
+CMDS              := server ingestor decrypt migrate meshfeed-publisher
 DIST              := dist
 
 # Per-binary version stamping. Only these two read build metadata; ingestor and
@@ -69,6 +69,7 @@ LDFLAGS_server    := -X main.Version=$(GIT_VERSION) -X main.Commit=$(GIT_COMMIT)
 LDFLAGS_ingestor  :=
 LDFLAGS_decrypt   := -X main.version=$(GIT_VERSION)
 LDFLAGS_migrate   :=
+LDFLAGS_meshfeed-publisher :=
 
 # zig target triples for the platforms we ship. musl, so the result is static.
 ZIG_TARGET_linux_amd64 := x86_64-linux-musl
