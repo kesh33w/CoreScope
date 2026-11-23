@@ -110,6 +110,8 @@ How long (in hours) before a node is marked degraded or silent:
 |-------|---------|-------------|
 | `db.vacuumOnStartup` | `false` | Run a one-time full `VACUUM` on startup to enable incremental auto-vacuum (blocks for minutes on large DBs) |
 | `db.incrementalVacuumPages` | `1024` | Free pages returned to the OS after each retention reaper cycle |
+| `db.batchCommitMs` | `0` (off) | Ingestor only. Group writes into one commit per interval (1–4000 ms) instead of one or more per packet. Cuts SSD writes several-fold on busy feeds; a crash or power loss can drop up to one interval, and the server sees new rows up to one interval later |
+| `db.walAutocheckpointPages` | `0` (SQLite's 1000) | Ingestor, with `batchCommitMs` only. WAL auto-checkpoint threshold in 4 KB pages; larger values copy a repeatedly rewritten page into the database once per checkpoint (e.g. `50000` ≈ 200 MB WAL) |
 
 See [Database](database.md) for details on SQLite auto-vacuum, WAL, and manual maintenance.
 See [#919](https://github.com/Kpa-clawbot/CoreScope/issues/919) for background.

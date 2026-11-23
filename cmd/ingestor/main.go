@@ -84,10 +84,14 @@ func main() {
 	sources := cfg.ResolvedSources()
 
 	synchronous := ""
+	var batchCommit time.Duration
+	var checkpointPages int
 	if cfg.DB != nil {
 		synchronous = cfg.DB.Synchronous
+		batchCommit = time.Duration(cfg.DB.BatchCommitMs) * time.Millisecond
+		checkpointPages = cfg.DB.WalAutocheckpointPages
 	}
-	store, err := OpenStoreWithIntervalAndSynchronous(cfg.DBPath, cfg.MetricsSampleInterval(), synchronous)
+	store, err := OpenStoreWithBatchCommit(cfg.DBPath, cfg.MetricsSampleInterval(), synchronous, batchCommit, checkpointPages)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
