@@ -68,6 +68,22 @@
   let nodeFilterShown = 0;
   // Region filter (#1045): observer_id → IATA code, populated from /api/observers
   let observerIataMap = {};
+  // observer id → region key for the region filter: the IATA code, or the
+  // frequency when the filter is in frequency mode (RegionFilter.observerKey).
+  let observerRegionMap = {};
+  let observerRegionData = null;     // last /api/observers response
+  let observerRegionMapMode = null;  // frequency mode the map was built in
+  // The mode arrives with the region filter's first fetch, which can land
+  // after /api/observers, so the map is rebuilt when the mode it was built in
+  // no longer holds.
+  function currentObserverRegionMap() {
+    var mode = !!(window.RegionFilter && RegionFilter.isFrequencyMode && RegionFilter.isFrequencyMode());
+    if (observerRegionMapMode !== mode) {
+      observerRegionMap = buildObserverRegionMap(observerRegionData);
+      observerRegionMapMode = mode;
+    }
+    return observerRegionMap;
+  }
   let observerData = {};
   let observerCoords = {};
   let regionFilterChangeHandler = null;
@@ -120,6 +136,19 @@
    * Exported for tests via window._liveBuildObserverIataMap.
    * Fixes #1136 (regression introduced in #1080 which assumed array shape).
    */
+  function buildObserverRegionMap(data) {
+    var list = Array.isArray(data) ? data : (data && Array.isArray(data.observers) ? data.observers : null);
+    var m = {};
+    if (!list) return m;
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i];
+      var key = o && o.id != null && window.RegionFilter && RegionFilter.observerKey
+        ? RegionFilter.observerKey(o) : (o && o.iata);
+      if (o && o.id != null && key) m[o.id] = key;
+    }
+    return m;
+  }
+
   function buildObserverIataMap(data) {
     var list = null;
     if (Array.isArray(data)) list = data;
@@ -2802,6 +2831,8 @@
       observerData = Object.fromEntries(list.map(o => [o.id, o]));
       observerCoords = coords.coords || {};
       setObserverIataMap(buildObserverIataMap(data));
+      observerRegionData = data;
+      observerRegionMapMode = null;
     } catch (e) { console.warn('Failed to load live observer context:', e); }
   }
 
@@ -3408,7 +3439,7 @@
     // --- Region filter (#1045): drop packet if no observation matches selected IATA ---
     if (window.RegionFilter && typeof RegionFilter.getSelected === 'function') {
       var _regionSel = RegionFilter.getSelected();
-      if (_regionSel && _regionSel.length && !packetMatchesRegion(packets, observerIataMap, _regionSel)) return;
+      if (_regionSel && _regionSel.length && !packetMatchesRegion(packets, currentObserverRegionMap(), _regionSel)) return;
     }
 
     // --- Ensure ADVERT nodes appear on map ---

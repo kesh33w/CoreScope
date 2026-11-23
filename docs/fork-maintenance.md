@@ -70,3 +70,12 @@ With `hopAliases` configured, the ingestor accepts that list only from the named
 - At most 64 aliases per message; labels are trimmed to 48 characters with control characters removed.
 - Alias rows age out with `retention.nodeDays` like any node if the observer stops reporting.
 - Alias rows appear in node lists as repeaters without a location, and count toward node totals.
+
+## Region filter by frequency
+
+`regionFilter.mode: "frequency"` (default `"iata"`) makes the region filter group observers by the frequency their radio reports instead of by IATA code. WAN uses it so the dropdown picks a network (910.525, 909.875, 927.875 MHz, ...); scope keeps IATA mode. Both run the same build.
+
+- One switch for the whole deployment, in `cmd/server/region_frequency.go`. Every region path keys on one observer → region-key mapping: `observerRegionKeys` (node home regions, `observerIATAs`), `regionObsMatcher`/`regionObsCond` (every SQL `?region=` filter), `GetObserverIdsForRegion` (in-memory region caches). In IATA mode `regionObsMatcher` emits the original `UPPER(TRIM(iata)) IN (...)`.
+- An observer's frequency is its current `observers.radio`, read like the ingestor's `parseObserverFrequency` (unit suffix or magnitude-scaled Hz/kHz) and rounded to kHz. A retuned observer takes its old packets with it. `observer_radios` history is not used.
+- `/api/config/regions` lists frequencies of observers seen in the last 7 days; `regions` may label them. `/api/config/region-quick-picks` sends `mode: "frequency"` and no picks; the frontend reads the mode there (`RegionFilter.isFrequencyMode`, `RegionFilter.observerKey`) to relabel the filter and to match observers client-side on Live, Packets and Observers.
+- On upstream merges, any new SQL that matches `obs.iata` against a `?region=` value must go through `regionObsMatcher`; `grep -n "iata)) IN" cmd/server` should list only `region_frequency.go` and `scope_audit.go` (`observerRegionClause`, which matches frequencies on its caller's transaction).

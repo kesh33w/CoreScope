@@ -114,6 +114,10 @@ type Config struct {
 	// never heard zero-hop (#1879). See RegionFallbackMaxHops.
 	RegionFallback *RegionFallbackConfig `json:"regionFallback,omitempty"`
 
+	// RegionFilter switches the region filter from IATA codes to observer
+	// frequencies. See RegionByFrequency (region_frequency.go).
+	RegionFilter *RegionFilterConfig `json:"regionFilter,omitempty"`
+
 	Roles            map[string]interface{} `json:"roles"`
 	HealthThresholds *HealthThresholds      `json:"healthThresholds"`
 	PathTrust        *PathTrustConfig       `json:"pathTrust,omitempty"`

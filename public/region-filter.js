@@ -9,6 +9,33 @@
   var _container = null;
   var _loaded = false;
   var _picks = [];         // configured quick picks: [{ name, description, regions: [code] }]
+  var _byFrequency = false; // server regionFilter.mode "frequency": codes are MHz values
+
+  /** Region key of an observer object: its frequency in frequency mode (from
+   *  radio "MHz,kHz,SF,CR", rounded to kHz like the server), else its IATA. */
+  function observerKey(o) {
+    if (!o) return '';
+    if (!_byFrequency) return o.iata || '';
+    // Same reading as the server (frequencyRegionKey): unit suffix, else a
+    // bare Hz or kHz value scaled by magnitude.
+    var s = String(o.radio || '').split(',')[0].trim().toLowerCase();
+    var scale = 0;
+    if (/mhz$/.test(s)) { s = s.slice(0, -3); scale = 1; }
+    else if (/khz$/.test(s)) { s = s.slice(0, -3); scale = 1e-3; }
+    else if (/hz$/.test(s)) { s = s.slice(0, -2); scale = 1e-6; }
+    var f = Number(s.trim());
+    if (!s.trim() || !isFinite(f) || f <= 0) return '';
+    if (!scale) scale = f >= 1e7 ? 1e-6 : (f >= 1e4 ? 1e-3 : 1);
+    f *= scale;
+    if (f < 100 || f > 2500) return '';
+    return String(Math.round(f * 1000) / 1000);
+  }
+
+  /** Words for the filter: "Region"/"Regions" or "Frequency"/"Frequencies". */
+  function noun(plural) {
+    if (_byFrequency) return plural ? 'Frequencies' : 'Frequency';
+    return plural ? 'Regions' : 'Region';
+  }
 
   function loadFromStorage() {
     try {
@@ -36,6 +63,7 @@
     try {
       var data = await CSApi.fetch('/api/config/region-quick-picks').then(function (r) { return r.json(); });
       _picks = (data && Array.isArray(data.quickPicks)) ? data.quickPicks : [];
+      _byFrequency = !!(data && data.mode === 'frequency');
     } catch (e) {
       // Offline or an older server without the endpoint: the region filter
       // works exactly as before, just without quick picks.
@@ -179,21 +207,21 @@
 
   /** Build summary label for dropdown trigger */
   function dropdownLabel(codes) {
-    if (!_selected) return 'All Regions';
+    if (!_selected) return 'All ' + noun(true);
     var named = activePick(presentPicks(codes));
     if (named) return esc(named.name);
     var sel = Array.from(_selected);
-    if (sel.length === 0) return 'All Regions';
-    if (sel.length <= 2) return sel.join(', ');
-    return sel.length + ' Regions';
+    if (sel.length === 0) return 'All ' + noun(true);
+    if (sel.length <= 2) return sel.map(function (c) { return _byFrequency ? c + ' MHz' : c; }).join(', ');
+    return sel.length + ' ' + noun(true);
   }
 
   /** Render pill bar mode (≤4 regions) */
   function renderPills(container, codes) {
     var allSelected = !_selected;
     var picks = presentPicks(codes);
-    var html = '<div class="region-filter-bar" role="group" aria-label="Region filter">';
-    html += '<span class="region-filter-label" id="region-filter-label">Region:</span>';
+    var html = '<div class="region-filter-bar" role="group" aria-label="' + noun(false) + ' filter">';
+    html += '<span class="region-filter-label" id="region-filter-label">' + noun(false) + ':</span>';
     html += barPicksHtml(picks);
     html += '<button class="region-pill' + (allSelected ? ' region-pill-active' : '') +
       '" data-region="__all__" role="checkbox" aria-checked="' + allSelected + '">All</button>';
@@ -219,10 +247,10 @@
   function renderDropdown(container, codes) {
     var allSelected = !_selected;
     var picks = presentPicks(codes);
-    var html = '<div class="region-dropdown-wrap" role="group" aria-label="Region filter">';
+    var html = '<div class="region-dropdown-wrap" role="group" aria-label="' + noun(false) + ' filter">';
     html += '<button class="region-dropdown-trigger" aria-haspopup="listbox" aria-expanded="false">' +
       dropdownLabel(codes) + ' ▾</button>';
-    html += '<div class="region-dropdown-menu" role="listbox" aria-label="Select regions" hidden>';
+    html += '<div class="region-dropdown-menu" role="listbox" aria-label="Select ' + noun(true).toLowerCase() + '" hidden>';
     html += '<label class="region-dropdown-item"><input type="checkbox" data-region="__all__"' +
       (allSelected ? ' checked' : '') + '> <strong>All</strong></label>';
     html += menuPicksHtml(picks);
@@ -230,6 +258,9 @@
       var configLabel = _regions[code];
       var cityName = configLabel || (window.IATA_CITIES && window.IATA_CITIES[code]);
       var label = cityName ? (code + ' - ' + cityName) : code;
+      // Frequency mode: the server's label is already "910.525 MHz" or a
+      // configured name; IATA city names do not apply.
+      if (_byFrequency) label = configLabel || (code + ' MHz');
       var active = allSelected || (_selected && _selected.has(code));
       html += '<label class="region-dropdown-item"><input type="checkbox" data-region="' + code + '"' +
         (active ? ' checked' : '') + '> ' + label + '</label>';
@@ -273,6 +304,9 @@
     if (container._regionCleanup) { container._regionCleanup(); container._regionCleanup = null; }
 
     var codes = Object.keys(_regions);
+    // A whole-number frequency ("911") is an integer-like key, which JS lists
+    // before every other key: sort numerically instead.
+    if (_byFrequency) codes.sort(function (a, b) { return parseFloat(a) - parseFloat(b); });
     if (codes.length < 2) {
       container.innerHTML = '';
       container.style.display = 'none';
@@ -414,6 +448,8 @@
     render: render,
     getSelected: getSelected,
     getRegionParam: getRegionParam,
+    observerKey: observerKey,
+    isFrequencyMode: function () { return _byFrequency; },
     regionQueryString: regionQueryString,
     nodesRegionQueryString: nodesRegionQueryString,
     onChange: onChange,

@@ -56,7 +56,7 @@ func routeDescriptions() map[string]routeMeta {
 		// Config
 		"GET /api/config/cache":              {Summary: "Get cache configuration", Tag: "config"},
 		"GET /api/config/client":             {Summary: "Get client configuration", Description: "Frontend configuration. `clientRxAppUrl` is present only when clientRxCoverage is enabled and clientRxCoverage.appUrl is an absolute https URL; the coverage page shows it as a QR code.", Tag: "config"},
-		"GET /api/config/regions":            {Summary: "Get configured regions", Tag: "config"},
+		"GET /api/config/regions":            {Summary: "Get configured regions", Description: "Region filter choices, code → label. IATA codes by default; with config regionFilter.mode \"frequency\", the MHz frequencies of observers seen in the last 7 days.", Tag: "config"},
 		"GET /api/config/region-quick-picks": {Summary: "Get region quick picks", Description: "Named groups of region (IATA) codes from config regionQuickPicks, offered as one-tap choices by the region filter. Always a list; empty when none are configured.", Tag: "config"},
 		"GET /api/config/theme":              {Summary: "Get theme configuration", Description: "Returns color maps, CSS variables, and theme defaults.", Tag: "config"},
 		"GET /api/config/map":                {Summary: "Get map configuration", Tag: "config"},
