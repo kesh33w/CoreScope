@@ -4262,6 +4262,13 @@ func (s *PacketStore) observerIATAs() map[string]string {
 	if s.db == nil {
 		return obsIATA
 	}
+	// Frequency mode: the observer's frequency is its region (region_frequency.go).
+	if s.db.regionByFrequency {
+		if keys, err := s.db.observerRegionKeys(""); err == nil {
+			return keys
+		}
+		return obsIATA
+	}
 	if observers, err := s.db.GetObservers(); err == nil {
 		for _, o := range observers {
 			if o.IATA != nil && *o.IATA != "" {

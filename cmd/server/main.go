@@ -187,6 +187,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("[db] failed to open %s: %v", resolvedDB, err)
 	}
+	database.SetRegionByFrequency(cfg.RegionByFrequency())
+	if cfg.RegionByFrequency() {
+		log.Printf("[config] region filter: by observer frequency")
+	}
 	var dbCloseOnce sync.Once
 	dbClose := func() error {
 		var err error

@@ -378,7 +378,7 @@ window.preserveCompareSelection = function preserveCompareSelection(prevIds, tbo
     // Apply region filter
     const selectedRegions = RegionFilter.getSelected();
     const filtered = selectedRegions
-      ? observers.filter(o => o.iata && selectedRegions.includes(o.iata))
+      ? observers.filter(o => { const k = RegionFilter.observerKey(o); return k && selectedRegions.includes(k); })
       : observers;
 
     if (filtered.length === 0) {

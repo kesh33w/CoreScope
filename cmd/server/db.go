@@ -52,6 +52,7 @@ type DB struct {
 	conn                    *sql.DB
 	path                    string // filesystem path to the database file
 	isV3                    bool   // v3 schema: observer_idx in observations (vs observer_id in v2)
+	regionByFrequency       bool   // config regionFilter.mode "frequency"; set at startup (region_frequency.go)
 	hasResolvedPath         bool   // observations table has resolved_path column
 	hasObsRawHex            bool   // observations table has raw_hex column (#881)
 	hasScopeName            bool   // transmissions.scope_name column exists (#899)
@@ -977,7 +978,11 @@ func (db *DB) buildPacketWhere(q PacketQuery) ([]string, []interface{}) {
 		where = append(where, "timestamp < ?")
 		args = append(args, q.Until)
 	}
-	if q.Region != "" {
+	if q.Region != "" && db.regionByFrequency {
+		cond, condArgs := db.regionWhere("", q.Region)
+		where = append(where, "observer_id IN (SELECT id FROM observers WHERE "+cond+")")
+		args = append(args, condArgs...)
+	} else if q.Region != "" {
 		where = append(where, "observer_id IN (SELECT id FROM observers WHERE iata = ?)")
 		args = append(args, q.Region)
 	}
@@ -1061,7 +1066,15 @@ func (db *DB) buildTransmissionWhere(q PacketQuery) ([]string, []interface{}) {
 	} else if q.ExcludeTx {
 		where = append(where, "EXISTS (SELECT 1 FROM observations oi WHERE oi.transmission_id = t.id"+directionFilter+")")
 	}
-	if q.Region != "" {
+	if q.Region != "" && db.regionByFrequency {
+		cond, condArgs := db.regionWhere("obi", q.Region)
+		if db.isV3 {
+			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.rowid = oi.observer_idx WHERE oi.transmission_id = t.id AND "+cond+")")
+		} else {
+			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.id = oi.observer_id WHERE oi.transmission_id = t.id AND "+cond+")")
+		}
+		args = append(args, condArgs...)
+	} else if q.Region != "" {
 		if db.isV3 {
 			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.rowid = oi.observer_idx WHERE oi.transmission_id = t.id AND obi.iata = ?)")
 		} else {
@@ -1229,11 +1242,9 @@ func (db *DB) GetNodes(nq NodeQuery) ([]map[string]interface{}, int, map[string]
 	if region != "" {
 		codes := normalizeRegionCodes(region)
 		if len(codes) > 0 {
-			placeholders := make([]string, len(codes))
-			regionArgs := make([]interface{}, len(codes))
-			for i, c := range codes {
-				placeholders[i] = "?"
-				regionArgs[i] = c
+			regionCond, regionArgs, err := db.regionObsCond("obs", codes)
+			if err != nil {
+				return nil, 0, nil, err
 			}
 			joinCond := "obs.rowid = o.observer_idx"
 			if !db.isV3 {
@@ -1248,8 +1259,8 @@ func (db *DB) GetNodes(nq NodeQuery) ([]map[string]interface{}, int, map[string]
 				JOIN observations o ON o.transmission_id = t.id
 				JOIN observers obs ON %s
 				WHERE t.payload_type = 4
-				AND UPPER(TRIM(obs.iata)) IN (%s)
-			)`, joinCond, strings.Join(placeholders, ","))
+				AND %s
+			)`, joinCond, regionCond)
 			where = append(where, subq)
 			args = append(args, regionArgs...)
 		}
@@ -1709,13 +1720,11 @@ func (db *DB) GetObserverIdsForRegion(regionParam string) ([]string, error) {
 	if len(codes) == 0 {
 		return nil, nil
 	}
-	placeholders := make([]string, len(codes))
-	args := make([]interface{}, len(codes))
-	for i, c := range codes {
-		placeholders[i] = "?"
-		args[i] = c
+	cond, args, err := db.regionObsCond("", codes)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := db.conn.Query(fmt.Sprintf("SELECT id FROM observers WHERE UPPER(TRIM(iata)) IN (%s)", strings.Join(placeholders, ",")), args...)
+	rows, err := db.conn.Query("SELECT id FROM observers WHERE "+cond, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1755,6 +1764,11 @@ func normalizeRegionCodes(regionParam string) []string {
 		code := strings.TrimSpace(strings.ToUpper(token))
 		if code == "" || code == "ALL" {
 			continue
+		}
+		// A frequency (region filter frequency mode) in its canonical form,
+		// so "910.5250" matches "910.525". No IATA code parses as a number.
+		if f := canonicalFrequencyToken(code); f != "" {
+			code = f
 		}
 		codes = append(codes, code)
 	}
@@ -1943,19 +1957,17 @@ func (db *DB) GetChannels(region ...string) ([]map[string]interface{}, error) {
 		regionCodes := normalizeRegionCodes(regionParam)
 
 		var querySQL string
-		args := make([]interface{}, 0, len(regionCodes))
+		var args []interface{}
 
 		if len(regionCodes) > 0 {
-			placeholders := make([]string, len(regionCodes))
-			for i, code := range regionCodes {
-				placeholders[i] = "?"
-				args = append(args, code)
+			inRegion, regionArgs, err := db.regionObsMatcher(regionCodes)
+			if err != nil {
+				return nil, err
 			}
-			regionPlaceholder := strings.Join(placeholders, ",")
 			// #1899: the sample_json subquery is region-scoped too, so its placeholders
 			// appear FIRST in the statement (it sits in the SELECT list, ahead of the
-			// WHERE). Bind the codes twice, subquery set first.
-			args = append(append(make([]interface{}, 0, len(regionCodes)*2), args...), args...)
+			// WHERE). Bind the region arguments twice, subquery set first.
+			args = append(append(make([]interface{}, 0, len(regionArgs)*2), regionArgs...), regionArgs...)
 			if db.isV3 {
 				querySQL = fmt.Sprintf(`SELECT t.channel_hash,
 						COUNT(*) AS msg_count,
@@ -1964,7 +1976,7 @@ func (db *DB) GetChannels(region ...string) ([]map[string]interface{}, error) {
 						 JOIN observations o2 ON o2.transmission_id = t2.id
 						 LEFT JOIN observers obs2 ON obs2.rowid = o2.observer_idx
 						 WHERE t2.channel_hash = t.channel_hash AND t2.payload_type = 5
-						 AND obs2.rowid IS NOT NULL AND UPPER(TRIM(obs2.iata)) IN (%s)
+						 AND obs2.rowid IS NOT NULL AND %s
 						 ORDER BY t2.first_seen DESC LIMIT 1) AS sample_json
 					FROM transmissions t
 					JOIN observations o ON o.transmission_id = t.id
@@ -1972,9 +1984,9 @@ func (db *DB) GetChannels(region ...string) ([]map[string]interface{}, error) {
 					WHERE t.payload_type = 5
 					AND t.channel_hash IS NOT NULL
 					AND t.channel_hash NOT LIKE 'enc_%%'
-					AND obs.rowid IS NOT NULL AND UPPER(TRIM(obs.iata)) IN (%s)
+					AND obs.rowid IS NOT NULL AND %s
 					GROUP BY t.channel_hash
-					ORDER BY last_activity DESC`, regionPlaceholder, regionPlaceholder)
+					ORDER BY last_activity DESC`, inRegion("obs2"), inRegion("obs"))
 			} else {
 				querySQL = fmt.Sprintf(`SELECT t.channel_hash,
 						COUNT(*) AS msg_count,
@@ -1985,7 +1997,7 @@ func (db *DB) GetChannels(region ...string) ([]map[string]interface{}, error) {
 						 AND EXISTS (
 							SELECT 1 FROM observers obs2
 							WHERE obs2.id = o2.observer_id
-							AND UPPER(TRIM(obs2.iata)) IN (%s)
+							AND %s
 						 )
 						 ORDER BY t2.first_seen DESC LIMIT 1) AS sample_json
 					FROM transmissions t
@@ -1996,10 +2008,10 @@ func (db *DB) GetChannels(region ...string) ([]map[string]interface{}, error) {
 					AND EXISTS (
 						SELECT 1 FROM observers obs
 						WHERE obs.id = o.observer_id
-						AND UPPER(TRIM(obs.iata)) IN (%s)
+						AND %s
 					)
 					GROUP BY t.channel_hash
-					ORDER BY last_activity DESC`, regionPlaceholder, regionPlaceholder)
+					ORDER BY last_activity DESC`, inRegion("obs2"), inRegion("obs"))
 			}
 		} else {
 			querySQL = `SELECT channel_hash,
@@ -2095,15 +2107,14 @@ func (db *DB) GetEncryptedChannels(region ...string) ([]map[string]interface{}, 
 		regionCodes := normalizeRegionCodes(regionParam)
 
 		var querySQL string
-		args := make([]interface{}, 0, len(regionCodes))
+		var args []interface{}
 
 		if len(regionCodes) > 0 {
-			placeholders := make([]string, len(regionCodes))
-			for i, code := range regionCodes {
-				placeholders[i] = "?"
-				args = append(args, code)
+			inRegion, regionArgs, err := db.regionObsMatcher(regionCodes)
+			if err != nil {
+				return nil, err
 			}
-			regionPlaceholder := strings.Join(placeholders, ",")
+			args = regionArgs
 			if db.isV3 {
 				querySQL = fmt.Sprintf(`SELECT t.channel_hash,
 						COUNT(*) AS msg_count,
@@ -2113,9 +2124,9 @@ func (db *DB) GetEncryptedChannels(region ...string) ([]map[string]interface{}, 
 					LEFT JOIN observers obs ON obs.rowid = o.observer_idx
 					WHERE t.payload_type = 5
 					AND t.channel_hash LIKE 'enc_%%'
-					AND obs.rowid IS NOT NULL AND UPPER(TRIM(obs.iata)) IN (%s)
+					AND obs.rowid IS NOT NULL AND %s
 					GROUP BY t.channel_hash
-					ORDER BY last_activity DESC`, regionPlaceholder)
+					ORDER BY last_activity DESC`, inRegion("obs"))
 			} else {
 				querySQL = fmt.Sprintf(`SELECT t.channel_hash,
 						COUNT(*) AS msg_count,
@@ -2127,10 +2138,10 @@ func (db *DB) GetEncryptedChannels(region ...string) ([]map[string]interface{}, 
 					AND EXISTS (
 						SELECT 1 FROM observers obs
 						WHERE obs.id = o.observer_id
-						AND UPPER(TRIM(obs.iata)) IN (%s)
+						AND %s
 					)
 					GROUP BY t.channel_hash
-					ORDER BY last_activity DESC`, regionPlaceholder)
+					ORDER BY last_activity DESC`, inRegion("obs"))
 			}
 		} else {
 			querySQL = `SELECT channel_hash,
@@ -2232,15 +2243,14 @@ func (db *DB) GetChannelMessages(channelHash string, limit, offset int, region .
 	}
 
 	regionCodes := normalizeRegionCodes(regionParam)
-	regionArgs := make([]interface{}, 0, len(regionCodes))
-	regionPlaceholders := ""
+	var regionArgs []interface{}
+	regionCond := ""
 	if len(regionCodes) > 0 {
-		placeholders := make([]string, len(regionCodes))
-		for i, code := range regionCodes {
-			placeholders[i] = "?"
-			regionArgs = append(regionArgs, code)
+		var err error
+		regionCond, regionArgs, err = db.regionObsCond("obs", regionCodes)
+		if err != nil {
+			return nil, 0, err
 		}
-		regionPlaceholders = strings.Join(placeholders, ",")
 	}
 
 	// regionFilter: a transmission is included only if at least one of its
@@ -2252,13 +2262,13 @@ func (db *DB) GetChannelMessages(channelHash string, limit, offset int, region .
 				SELECT 1 FROM observations o
 				JOIN observers obs ON obs.rowid = o.observer_idx
 				WHERE o.transmission_id = t.id
-				  AND UPPER(TRIM(obs.iata)) IN (%s))`, regionPlaceholders)
+				  AND %s)`, regionCond)
 		} else {
 			regionFilter = fmt.Sprintf(` AND EXISTS (
 				SELECT 1 FROM observations o
 				JOIN observers obs ON obs.id = o.observer_id
 				WHERE o.transmission_id = t.id
-				  AND UPPER(TRIM(obs.iata)) IN (%s))`, regionPlaceholders)
+				  AND %s)`, regionCond)
 		}
 	}
 

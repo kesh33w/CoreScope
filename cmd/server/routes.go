@@ -634,6 +634,10 @@ func (s *Server) handleConfigAreasPolygons(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleConfigRegions(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.RegionByFrequency() {
+		writeJSON(w, s.regionFilterOptions())
+		return
+	}
 	regions := make(map[string]string)
 	for k, v := range s.cfg.Regions {
 		regions[k] = v
@@ -650,10 +654,20 @@ func (s *Server) handleConfigRegions(w http.ResponseWriter, r *http.Request) {
 // RegionQuickPicksResponse is GET /api/config/region-quick-picks.
 type RegionQuickPicksResponse struct {
 	QuickPicks []RegionQuickPick `json:"quickPicks"`
+	// Mode is "frequency" when the region filter groups observers by
+	// frequency (config regionFilter.mode), else omitted. The frontend reads it
+	// here, beside the picks it already fetches, to label the filter.
+	Mode string `json:"mode,omitempty"`
 }
 
 func (s *Server) handleConfigRegionQuickPicks(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, RegionQuickPicksResponse{QuickPicks: s.cfg.NormalizedRegionQuickPicks()})
+	resp := RegionQuickPicksResponse{QuickPicks: s.cfg.NormalizedRegionQuickPicks()}
+	if s.cfg.RegionByFrequency() {
+		// Picks are groups of IATA codes; none can match a frequency.
+		resp.QuickPicks = []RegionQuickPick{}
+		resp.Mode = "frequency"
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleConfigTheme(w http.ResponseWriter, r *http.Request) {
@@ -3802,9 +3816,21 @@ func (s *Server) handleMetricsSummary(w http.ResponseWriter, r *http.Request) {
 
 	// Filter by region if specified
 	if region != "" {
+		// Frequency mode: match each observer's frequency instead of its IATA.
+		var inRegion map[string]bool
+		if s.cfg.RegionByFrequency() {
+			inRegion = map[string]bool{}
+			if codes := normalizeRegionCodes(region); len(codes) > 0 {
+				if ids, err := s.db.regionObserverIDs(codes); err == nil {
+					for _, id := range ids {
+						inRegion[id] = true
+					}
+				}
+			}
+		}
 		filtered := make([]MetricsSummaryRow, 0)
 		for _, row := range summary {
-			if strings.EqualFold(row.IATA, region) {
+			if (inRegion == nil && strings.EqualFold(row.IATA, region)) || inRegion[row.ObserverID] {
 				filtered = append(filtered, row)
 			}
 		}
