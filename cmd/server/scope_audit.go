@@ -413,15 +413,13 @@ func (db *DB) observerRegionClause(q interface {
 		args[i] = c
 	}
 	query := "SELECT " + obsCol + " FROM observers WHERE UPPER(TRIM(iata)) IN (" + placeholders + ")"
-	var want map[string]bool
+	var sel *regionSelection
 	if db.regionByFrequency {
 		// Matched here on q, the caller's transaction, rather than through
 		// regionObsCond, which would take a second pool connection.
-		query, args = "SELECT "+obsCol+", radio FROM observers WHERE radio IS NOT NULL AND radio != ''", nil
-		want = make(map[string]bool, len(codes))
-		for _, c := range codes {
-			want[c] = true
-		}
+		query, args = "SELECT "+obsCol+", COALESCE(radio, ''), UPPER(TRIM(COALESCE(iata, ''))) FROM observers", nil
+		s := newRegionSelection(codes)
+		sel = &s
 	}
 	rows, err := q.Query(query, args...)
 	if err != nil {
@@ -431,12 +429,12 @@ func (db *DB) observerRegionClause(q interface {
 	var ids []interface{}
 	for rows.Next() {
 		var id interface{}
-		if want != nil {
-			var radio string
-			if err := rows.Scan(&id, &radio); err != nil {
+		if sel != nil {
+			var radio, iata string
+			if err := rows.Scan(&id, &radio, &iata); err != nil {
 				return "", nil, err
 			}
-			if !want[frequencyRegionKey(radio)] {
+			if !sel.matches(frequencyRegionKey(radio), iata) {
 				continue
 			}
 		} else if err := rows.Scan(&id); err != nil {

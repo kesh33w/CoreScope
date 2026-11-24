@@ -98,12 +98,14 @@
     if (!selected || !selected.length) return true;
     if (!packets || !packets.length) return false;
     const sel = selected.map(function(s) { return String(s).toUpperCase(); });
+    // Frequency mode keys are "<frequency>|<IATA>": RegionFilter matches them.
+    var keyMatches = window.RegionFilter && RegionFilter.keyMatches;
     for (var i = 0; i < packets.length; i++) {
       var oid = packets[i] && packets[i].observer_id;
       if (oid == null) continue;
       var iata = obsMap && obsMap[oid];
       if (!iata) continue;
-      if (sel.indexOf(String(iata).toUpperCase()) !== -1) return true;
+      if (keyMatches ? keyMatches(iata, selected) : sel.indexOf(String(iata).toUpperCase()) !== -1) return true;
     }
     return false;
   }

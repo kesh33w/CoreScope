@@ -9,13 +9,16 @@
   var _container = null;
   var _loaded = false;
   var _picks = [];         // configured quick picks: [{ name, description, regions: [code] }]
-  var _byFrequency = false; // server regionFilter.mode "frequency": codes are MHz values
+  var _byFrequency = false; // server regionFilter.mode "frequency": a frequency dropdown beside the region one
+  var _freqRegions = {};    // frequency mode: { "910.525": ["OAK", "SJC", ...] }
 
-  /** Region key of an observer object: its frequency in frequency mode (from
-   *  radio "MHz,kHz,SF,CR", rounded to kHz like the server), else its IATA. */
-  function observerKey(o) {
-    if (!o) return '';
-    if (!_byFrequency) return o.iata || '';
+  /** True for a selection code that is a frequency in MHz ("910.525"). In
+   *  frequency mode the selection holds frequencies and IATA codes. */
+  function isFrequencyCode(c) { return /^\d+(\.\d+)?$/.test(String(c)); }
+
+  /** Frequency of an observer object in MHz, from radio "MHz,kHz,SF,CR",
+   *  rounded to kHz like the server (frequencyRegionKey), or ''. */
+  function observerFrequency(o) {
     // Same reading as the server (frequencyRegionKey): unit suffix, else a
     // bare Hz or kHz value scaled by magnitude.
     var s = String(o.radio || '').split(',')[0].trim().toLowerCase();
@@ -31,10 +34,75 @@
     return String(Math.round(f * 1000) / 1000);
   }
 
-  /** Words for the filter: "Region"/"Regions" or "Frequency"/"Frequencies". */
-  function noun(plural) {
-    if (_byFrequency) return plural ? 'Frequencies' : 'Frequency';
+  /** Region key of an observer object: its IATA code, or in frequency mode
+   *  "<frequency>|<IATA>" like the server's observerRegionKey. */
+  function observerKey(o) {
+    if (!o) return '';
+    if (!_byFrequency) return o.iata || '';
+    var iata = String(o.iata || '').trim().toUpperCase();
+    var freq = observerFrequency(o);
+    return freq || iata ? freq + '|' + iata : '';
+  }
+
+  /** True when a region key (observerKey) is in the selection codes. A bare
+   *  IATA key is matched case-insensitively against the codes; a frequency
+   *  key "<frequency>|<IATA>" must match one of the selected frequencies (if
+   *  any) and one of the selected codes (if any), like the server. */
+  function keyMatches(key, selected) {
+    if (!key || !selected || !selected.length) return false;
+    key = String(key);
+    var bar = key.indexOf('|');
+    if (bar < 0) {
+      var k = key.toUpperCase();
+      return selected.some(function (c) { return String(c).toUpperCase() === k; });
+    }
+    var freq = key.slice(0, bar), iata = key.slice(bar + 1).toUpperCase();
+    var freqs = [], iatas = [];
+    selected.forEach(function (c) {
+      if (isFrequencyCode(c)) freqs.push(String(Math.round(parseFloat(c) * 1000) / 1000));
+      else iatas.push(String(c).toUpperCase());
+    });
+    if (freqs.length && freqs.indexOf(freq) < 0) return false;
+    if (iatas.length && iatas.indexOf(iata) < 0) return false;
+    return true;
+  }
+
+  /** Words for a filter control: "Region"/"Regions" or "Frequency"/"Frequencies". */
+  function noun(plural, kind) {
+    if (kind === 'freq') return plural ? 'Frequencies' : 'Frequency';
     return plural ? 'Regions' : 'Region';
+  }
+
+  /** The selected codes of one kind ('freq' or 'region'), as an array. In
+   *  iata mode every code is a region. */
+  function selectedOfKind(kind) {
+    if (!_selected) return [];
+    return Array.from(_selected).filter(function (c) {
+      return (_byFrequency && isFrequencyCode(c)) === (kind === 'freq');
+    });
+  }
+
+  /** Region codes offered for the selected frequencies: those with an
+   *  observer on one of them, or every region when none is selected. */
+  function regionsForFrequencies(freqs, allRegions) {
+    if (!freqs.length) return allRegions;
+    var on = Object.create(null);
+    freqs.forEach(function (f) { (_freqRegions[f] || []).forEach(function (c) { on[c] = true; }); });
+    return allRegions.filter(function (c) { return on[c]; });
+  }
+
+  /** Replace the selected codes of one kind, keeping the other kind's. A
+   *  frequency change drops selected regions with no observer on the new
+   *  frequencies, so no hidden choice keeps filtering. */
+  function setKindSelection(kind, codes, allRegions) {
+    var freqs = kind === 'freq' ? codes : selectedOfKind('freq');
+    var regions = kind === 'region' ? codes : selectedOfKind('region');
+    if (kind === 'freq' && allRegions) {
+      var offered = regionsForFrequencies(freqs, allRegions);
+      regions = regions.filter(function (c) { return offered.indexOf(c) >= 0; });
+    }
+    var all = freqs.concat(regions);
+    _selected = all.length ? new Set(all) : null;
   }
 
   function loadFromStorage() {
@@ -64,6 +132,7 @@
       var data = await CSApi.fetch('/api/config/region-quick-picks').then(function (r) { return r.json(); });
       _picks = (data && Array.isArray(data.quickPicks)) ? data.quickPicks : [];
       _byFrequency = !!(data && data.mode === 'frequency');
+      _freqRegions = (data && data.frequencyRegions) || {};
     } catch (e) {
       // Offline or an older server without the endpoint: the region filter
       // works exactly as before, just without quick picks.
@@ -115,10 +184,11 @@
 
   /** The pick whose codes are exactly the current selection, if any. */
   function activePick(picks) {
-    if (!_selected || _selected.size === 0) return null;
+    var sel = selectedOfKind('region');
+    if (sel.length === 0) return null;
     for (var p of picks) {
-      if (p.codes.length !== _selected.size) continue;
-      if (p.codes.every(function (c) { return _selected.has(c); })) return p;
+      if (p.codes.length !== sel.length) continue;
+      if (p.codes.every(function (c) { return sel.indexOf(c) >= 0; })) return p;
     }
     return null;
   }
@@ -161,7 +231,7 @@
   function applyPick(picks, index) {
     var p = picks[index];
     if (!p) return;
-    _selected = activePick(picks) === p ? null : new Set(p.codes);
+    setKindSelection('region', activePick(picks) === p ? [] : p.codes.slice());
     saveToStorage();
     if (_container) render(_container);
     _listeners.forEach(function (fn) { fn(getSelected()); });
@@ -205,23 +275,77 @@
     _listeners.forEach(function (fn) { fn(getSelected()); });
   }
 
-  /** Build summary label for dropdown trigger */
-  function dropdownLabel(codes) {
-    if (!_selected) return 'All ' + noun(true);
-    var named = activePick(presentPicks(codes));
+  /** Summary label for a dropdown trigger. ctl is the control (see
+   *  regionControl / frequencyControl). */
+  function dropdownLabel(ctl) {
+    var sel = ctl.selected();
+    if (!sel.length) return 'All ' + noun(true, ctl.kind);
+    var named = ctl.picks.length ? activePick(ctl.picks) : null;
     if (named) return esc(named.name);
-    var sel = Array.from(_selected);
-    if (sel.length === 0) return 'All ' + noun(true);
-    if (sel.length <= 2) return sel.map(function (c) { return _byFrequency ? c + ' MHz' : c; }).join(', ');
-    return sel.length + ' ' + noun(true);
+    if (sel.length <= 2) return sel.map(function (c) { return ctl.kind === 'freq' ? c + ' MHz' : c; }).join(', ');
+    return sel.length + ' ' + noun(true, ctl.kind);
+  }
+
+  /** The region control: IATA codes (in frequency mode, those on the
+   *  selected frequencies), with the quick picks. */
+  function regionControl(codes) {
+    return {
+      kind: 'region',
+      codes: codes,
+      picks: presentPicks(codes),
+      selected: function () { return selectedOfKind('region'); },
+      label: function (code) {
+        var configLabel = _regions[code];
+        // Frequency mode lists an unconfigured code with itself as its label;
+        // the city name reads better there.
+        if (_byFrequency && configLabel === code) configLabel = '';
+        var cityName = configLabel || (window.IATA_CITIES && window.IATA_CITIES[code]);
+        return cityName ? (code + ' - ' + cityName) : code;
+      }
+    };
+  }
+
+  /** The frequency control (frequency mode only). allRegions is every
+   *  region code, to narrow the region selection when this one changes. */
+  function frequencyControl(codes, allRegions) {
+    return {
+      kind: 'freq',
+      codes: codes,
+      picks: [],
+      allRegions: allRegions,
+      selected: function () { return selectedOfKind('freq'); },
+      // The server's label is "910.525 MHz" or a configured name.
+      label: function (code) { return _regions[code] || (code + ' MHz'); }
+    };
+  }
+
+  /** Toggle one code of a control, or all of them ('__all__'), then save,
+   *  redraw and tell the page. Ticking a code while all are shown selects
+   *  only it; ticking the last unticked one goes back to all. */
+  function toggleInControl(ctl, code) {
+    var sel = ctl.selected();
+    if (code === '__all__') {
+      sel = [];
+    } else if (!sel.length) {
+      sel = [code];
+    } else if (sel.indexOf(code) >= 0) {
+      sel = sel.filter(function (c) { return c !== code; });
+    } else {
+      sel = sel.concat([code]);
+      if (sel.length === ctl.codes.length) sel = [];
+    }
+    setKindSelection(ctl.kind, sel, ctl.allRegions);
+    saveToStorage();
+    if (_container) render(_container);
+    _listeners.forEach(function (fn) { fn(getSelected()); });
   }
 
   /** Render pill bar mode (≤4 regions) */
   function renderPills(container, codes) {
     var allSelected = !_selected;
     var picks = presentPicks(codes);
-    var html = '<div class="region-filter-bar" role="group" aria-label="' + noun(false) + ' filter">';
-    html += '<span class="region-filter-label" id="region-filter-label">' + noun(false) + ':</span>';
+    var html = '<div class="region-filter-bar" role="group" aria-label="' + noun(false, 'region') + ' filter">';
+    html += '<span class="region-filter-label" id="region-filter-label">' + noun(false, 'region') + ':</span>';
     html += barPicksHtml(picks);
     html += '<button class="region-pill' + (allSelected ? ' region-pill-active' : '') +
       '" data-region="__all__" role="checkbox" aria-checked="' + allSelected + '">All</button>';
@@ -243,27 +367,22 @@
     };
   }
 
-  /** Render dropdown mode (>4 regions) */
-  function renderDropdown(container, codes) {
-    var allSelected = !_selected;
-    var picks = presentPicks(codes);
-    var html = '<div class="region-dropdown-wrap" role="group" aria-label="' + noun(false) + ' filter">';
+  /** Render one dropdown control into container. Returns a cleanup
+   *  function that removes its outside-click listener. */
+  function renderDropdown(container, ctl) {
+    var sel = ctl.selected();
+    var allSelected = !sel.length;
+    var html = '<div class="region-dropdown-wrap" role="group" aria-label="' + noun(false, ctl.kind) + ' filter">';
     html += '<button class="region-dropdown-trigger" aria-haspopup="listbox" aria-expanded="false">' +
-      dropdownLabel(codes) + ' ▾</button>';
-    html += '<div class="region-dropdown-menu" role="listbox" aria-label="Select ' + noun(true).toLowerCase() + '" hidden>';
+      dropdownLabel(ctl) + ' ▾</button>';
+    html += '<div class="region-dropdown-menu" role="listbox" aria-label="Select ' + noun(true, ctl.kind).toLowerCase() + '" hidden>';
     html += '<label class="region-dropdown-item"><input type="checkbox" data-region="__all__"' +
       (allSelected ? ' checked' : '') + '> <strong>All</strong></label>';
-    html += menuPicksHtml(picks);
-    codes.forEach(function (code) {
-      var configLabel = _regions[code];
-      var cityName = configLabel || (window.IATA_CITIES && window.IATA_CITIES[code]);
-      var label = cityName ? (code + ' - ' + cityName) : code;
-      // Frequency mode: the server's label is already "910.525 MHz" or a
-      // configured name; IATA city names do not apply.
-      if (_byFrequency) label = configLabel || (code + ' MHz');
-      var active = allSelected || (_selected && _selected.has(code));
-      html += '<label class="region-dropdown-item"><input type="checkbox" data-region="' + code + '"' +
-        (active ? ' checked' : '') + '> ' + label + '</label>';
+    html += menuPicksHtml(ctl.picks);
+    ctl.codes.forEach(function (code) {
+      var active = allSelected || sel.indexOf(code) >= 0;
+      html += '<label class="region-dropdown-item"><input type="checkbox" data-region="' + esc(code) + '"' +
+        (active ? ' checked' : '') + '> ' + esc(ctl.label(code)) + '</label>';
     });
     html += '</div></div>';
     container.innerHTML = html;
@@ -280,9 +399,9 @@
 
     menu.onchange = function (e) {
       var input = e.target;
-      if (input.dataset.pick) { applyPick(picks, Number(input.dataset.pick)); return; }
+      if (input.dataset.pick) { applyPick(ctl.picks, Number(input.dataset.pick)); return; }
       if (!input.dataset.region) return;
-      toggleRegion(input.dataset.region, codes, container);
+      toggleInControl(ctl, input.dataset.region);
     };
 
     // Close on outside click
@@ -293,9 +412,29 @@
       }
     }
     document.addEventListener('click', onDocClick, true);
-    container._regionCleanup = function () {
-      document.removeEventListener('click', onDocClick, true);
-    };
+    return function () { document.removeEventListener('click', onDocClick, true); };
+  }
+
+  /** Frequency mode: a frequency dropdown and a region dropdown side by
+   *  side. The region one lists the codes on the selected frequencies. */
+  function renderPair(container, codes) {
+    var freqs = codes.filter(isFrequencyCode)
+      .sort(function (a, b) { return parseFloat(a) - parseFloat(b); });
+    var allRegions = codes.filter(function (c) { return !isFrequencyCode(c); }).sort();
+    var regions = regionsForFrequencies(selectedOfKind('freq'), allRegions);
+    container.innerHTML = '<div class="region-filter-pair">' +
+      '<div class="region-filter-part" data-kind="freq"></div>' +
+      '<div class="region-filter-part" data-kind="region"></div></div>';
+    container.onclick = null;
+    var cleanups = [];
+    var freqEl = container.querySelector('[data-kind="freq"]');
+    var regionEl = container.querySelector('[data-kind="region"]');
+    if (freqs.length >= 2) cleanups.push(renderDropdown(freqEl, frequencyControl(freqs, allRegions)));
+    else freqEl.style.display = 'none';
+    if (regions.length >= 2) cleanups.push(renderDropdown(regionEl, regionControl(regions)));
+    else regionEl.style.display = 'none';
+    container._regionCleanup = function () { cleanups.forEach(function (fn) { fn(); }); };
+    return freqs.length >= 2 || regions.length >= 2;
   }
 
   /** Render the filter bar into a container element */
@@ -304,9 +443,10 @@
     if (container._regionCleanup) { container._regionCleanup(); container._regionCleanup = null; }
 
     var codes = Object.keys(_regions);
-    // A whole-number frequency ("911") is an integer-like key, which JS lists
-    // before every other key: sort numerically instead.
-    if (_byFrequency) codes.sort(function (a, b) { return parseFloat(a) - parseFloat(b); });
+    if (_byFrequency) {
+      container.style.display = renderPair(container, codes) ? '' : 'none';
+      return;
+    }
     if (codes.length < 2) {
       container.innerHTML = '';
       container.style.display = 'none';
@@ -315,7 +455,7 @@
     container.style.display = '';
 
     if (codes.length > 4 || container._forceDropdown) {
-      renderDropdown(container, codes);
+      container._regionCleanup = renderDropdown(container, regionControl(codes));
     } else {
       renderPills(container, codes);
     }
@@ -449,6 +589,7 @@
     getSelected: getSelected,
     getRegionParam: getRegionParam,
     observerKey: observerKey,
+    keyMatches: keyMatches,
     isFrequencyMode: function () { return _byFrequency; },
     regionQueryString: regionQueryString,
     nodesRegionQueryString: nodesRegionQueryString,

@@ -106,13 +106,15 @@ func (s *PacketStore) RegionNodePubkeys(region string) (keys []string, ok bool) 
 	}
 	s.mu.RUnlock()
 
-	wanted := make(map[string]bool, len(codes))
-	for _, c := range codes {
-		wanted[c] = true
-	}
+	// A frequency-only selection matches the bare frequencies of frequency
+	// mode placements, not their "<frequency>|<IATA>" pairs (region_frequency.go).
+	freqOnly := frequencyOnlySelection(codes)
 	for pk, p := range placements {
 		for _, r := range p.Regions {
-			if wanted[r] {
+			if freqOnly && strings.Contains(r, "|") {
+				continue
+			}
+			if regionKeyMatches(r, codes) {
 				seen[pk] = true
 				keys = append(keys, pk)
 				break
