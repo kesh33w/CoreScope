@@ -43,6 +43,11 @@ func cleanupSeed(t *testing.T, s *Store, n int) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	// Under CORESCOPE_TEST_BATCH_COMMIT_MS the seed is still in the shared
+	// batch; tests read it through independent connections.
+	if e = s.flushBatch(); e != nil {
+		t.Fatal(e)
+	}
 }
 func cleanupReq(n int) prunequeue.CleanupRequest {
 	return prunequeue.CleanupRequest{ID: "abc123", RequestedAt: time.Now().UTC(), Selection: prunequeue.CleanupSelection{ObserverID: "bad", IATA: "SMF", MaxObservationID: int64(n)}}

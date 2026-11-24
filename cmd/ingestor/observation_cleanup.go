@@ -230,12 +230,18 @@ func (s *Store) processObservationCleanup(req prunequeue.CleanupRequest, between
 			_, err = tx.Exec(`UPDATE observation_cleanup_revision SET revision=revision+1 WHERE id=1`)
 			return err
 		})
+		// With batch commits the chunk is only in the shared batch; commit it
+		// so the cursor is durable and readers see the progress, as promised.
+		if err == nil {
+			err = s.flushBatch()
+		}
 		if err != nil { // Reload committed counts: never count a rolled-back batch.
 			// A partial job is restorable even if a later batch failed.
 			_ = s.WriterTx("observation_cleanup", func(tx *sql.Tx) error {
 				_, e := tx.Exec(`UPDATE observation_cleanup_jobs SET status='failed' WHERE id=? AND status!='done'`, req.ID)
 				return e
 			})
+			_ = s.flushBatch()
 			_ = s.db.QueryRow(`SELECT deleted,restored FROM observation_cleanup_jobs WHERE id=?`, req.ID).Scan(&result.Deleted, &result.Restored)
 			return result, err
 		}
