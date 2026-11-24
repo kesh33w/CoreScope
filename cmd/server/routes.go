@@ -2862,6 +2862,20 @@ func (s *Server) handleResolveHops(w http.ResponseWriter, r *http.Request) {
 		contextPubkeys = append(contextPubkeys, observer)
 	}
 
+	// region (the page's region filter) breaks ties that affinity cannot:
+	// an ambiguous prefix prefers a candidate placed in that region, so a
+	// multi-region instance does not pick a same-prefix node hundreds of km
+	// away.
+	var regionNodes map[string]bool
+	if region := r.URL.Query().Get("region"); region != "" {
+		if keys, ok := s.regionNodeKeys(region); ok {
+			regionNodes = make(map[string]bool, len(keys))
+			for _, k := range keys {
+				regionNodes[strings.ToLower(k)] = true
+			}
+		}
+	}
+
 	// Get the neighbor graph for affinity scoring (may be nil).
 	var graph *NeighborGraph
 	if len(contextPubkeys) > 0 {
@@ -2982,11 +2996,34 @@ func (s *Server) handleResolveHops(w http.ResponseWriter, r *http.Request) {
 				// resolution strategy used, rather than collapsing everything to "ambiguous".
 				hr.Confidence = confidence
 			}
+			if hr.Confidence != "neighbor_affinity" && regionNodes != nil && !regionNodes[strings.ToLower(fmt.Sprint(hr.Pubkey))] {
+				if c := regionCandidate(candidates, regionNodes); c != nil {
+					hr.Name, hr.Pubkey = c.Name, c.Pubkey
+					hr.Confidence = "region_preference"
+				}
+			}
 
 			resolved[hop] = hr
 		}
 	}
 	writeJSON(w, ResolveHopsResponse{Resolved: resolved})
+}
+
+// regionCandidate returns the candidate in region with the best affinity
+// score, else the first one in region (candidates keep the prefix map's
+// order), or nil when none is in region.
+func regionCandidate(candidates []HopCandidate, region map[string]bool) *HopCandidate {
+	var pick *HopCandidate
+	for i := range candidates {
+		c := &candidates[i]
+		if !region[strings.ToLower(c.Pubkey)] {
+			continue
+		}
+		if pick == nil || (c.AffinityScore != nil && (pick.AffinityScore == nil || *c.AffinityScore > *pick.AffinityScore)) {
+			pick = c
+		}
+	}
+	return pick
 }
 
 // approvedChannelsField is the approvedChannels value of /api/channels: nil
