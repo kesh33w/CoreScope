@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"path/filepath"
 	"testing"
 )
 
@@ -63,5 +64,37 @@ func TestObservationCleanupIndependentReaderSnapshot(t *testing.T) {
 	}
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// With batch commits, every cleanup chunk and the finished job must be
+// committed when processObservationCleanup returns, not one interval later.
+func TestObservationCleanupCommitsUnderBatchCommit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cleanup-batch.db")
+	s, err := OpenStoreWithBatchCommit(path, 300, "NORMAL", maxBatchCommit, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	cleanupSeed(t, s, 1100)
+	result, err := s.processObservationCleanup(cleanupReq(1100), func() {})
+	if err != nil || result.Deleted != 1100 {
+		t.Fatalf("cleanup %+v %v", result, err)
+	}
+	reader, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_busy_timeout=1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var left int
+	var status string
+	if err = reader.QueryRow(`SELECT count(*) FROM observations`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if err = reader.QueryRow(`SELECT status FROM observation_cleanup_jobs WHERE id=?`, "abc123").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if left != 1 || status != "done" {
+		t.Fatalf("independent reader sees %d observations, job %q", left, status)
 	}
 }

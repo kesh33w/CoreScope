@@ -369,6 +369,27 @@ func valuesToNamed(args []driver.Value) []driver.NamedValue {
 	return named
 }
 
+// flushBatch commits the open grouped-commit batch now, so independent
+// readers see every write made so far and it survives a crash. Without batch
+// commits it does nothing. database/sql hands the single connection to Raw
+// only when no statement or transaction holds it.
+func (s *Store) flushBatch() error {
+	conn, err := s.db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return conn.Raw(func(dc any) error {
+		b, ok := dc.(*batchConn)
+		if !ok {
+			return nil
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.commit()
+	})
+}
+
 // startBatchFlusher commits an idle batch once it is due. database/sql hands
 // the single connection to Raw only when no statement or transaction holds
 // it, so this never interleaves with a writer.
