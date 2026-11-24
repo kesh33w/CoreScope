@@ -109,14 +109,27 @@ func (s *PacketStore) recomputeNodeHomeRegionSets() {
 	defer func() { _ = recover() }()
 	// The observers table is read before s.mu, as for computeNodeHomeRegions (#2146).
 	obsIATA := s.observerIATAs()
-	var counts, hops map[string]map[string]int
+	// Frequency mode also places nodes by frequency alone (region_frequency.go).
+	var obsFreq map[string]string
+	if s.db != nil && s.db.regionByFrequency {
+		obsFreq = frequencyOnlyKeys(obsIATA)
+	}
+	var counts, hops, freqCounts, freqHops map[string]map[string]int
 	func() {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 		counts = s.nodeZeroHopRegionCounts(obsIATA)
 		hops = s.nodeFewestHopsByRegion(obsIATA)
+		if obsFreq != nil {
+			freqCounts = s.nodeZeroHopRegionCounts(obsFreq)
+			freqHops = s.nodeFewestHopsByRegion(obsFreq)
+		}
 	}()
 	placements := regionPlacements(counts, hops, s.config.RegionFallbackMaxHops())
+	if obsFreq != nil {
+		placements = mergeFrequencyPlacements(
+			regionPlacements(freqCounts, freqHops, s.config.RegionFallbackMaxHops()), placements)
+	}
 	s.nodeRegionPlacements.Store(&placements)
 }
 

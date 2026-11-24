@@ -635,7 +635,8 @@ func (s *Server) handleConfigAreasPolygons(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleConfigRegions(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.RegionByFrequency() {
-		writeJSON(w, s.regionFilterOptions())
+		regions, _ := s.regionFilterOptions()
+		writeJSON(w, regions)
 		return
 	}
 	regions := make(map[string]string)
@@ -655,17 +656,22 @@ func (s *Server) handleConfigRegions(w http.ResponseWriter, r *http.Request) {
 type RegionQuickPicksResponse struct {
 	QuickPicks []RegionQuickPick `json:"quickPicks"`
 	// Mode is "frequency" when the region filter groups observers by
-	// frequency (config regionFilter.mode), else omitted. The frontend reads it
-	// here, beside the picks it already fetches, to label the filter.
+	// frequency and IATA code (config regionFilter.mode), else omitted. The
+	// frontend reads it here, beside the picks it already fetches, to show a
+	// frequency dropdown beside the region one.
 	Mode string `json:"mode,omitempty"`
+	// FrequencyRegions (frequency mode only) lists, per frequency, the IATA
+	// codes of recently seen observers on it, so choosing a frequency
+	// narrows the region dropdown.
+	FrequencyRegions map[string][]string `json:"frequencyRegions,omitempty"`
 }
 
 func (s *Server) handleConfigRegionQuickPicks(w http.ResponseWriter, r *http.Request) {
 	resp := RegionQuickPicksResponse{QuickPicks: s.cfg.NormalizedRegionQuickPicks()}
 	if s.cfg.RegionByFrequency() {
-		// Picks are groups of IATA codes; none can match a frequency.
-		resp.QuickPicks = []RegionQuickPick{}
+		// Picks stay groups of IATA codes, offered in the region dropdown.
 		resp.Mode = "frequency"
+		_, resp.FrequencyRegions = s.regionFilterOptions()
 	}
 	writeJSON(w, resp)
 }

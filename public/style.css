@@ -3727,6 +3727,9 @@ button.region-pill-active:hover { opacity: 0.85; color: var(--text-on-accent); }
 }
 .analytics-time-window-select:hover { border-color: var(--accent); }
 .region-dropdown-wrap { position: relative; display: inline-flex; align-items: center; }
+/* Frequency mode: frequency and region dropdowns side by side. */
+.region-filter-pair { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.region-filter-part { display: inline-flex; }
 .region-dropdown-trigger {
   display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 6px;
   font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid var(--border);

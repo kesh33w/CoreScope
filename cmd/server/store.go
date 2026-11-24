@@ -4239,30 +4239,20 @@ func iataMatchesRegion(iata, regionParam string) bool {
 	if iata == "" || regionParam == "" {
 		return false
 	}
-	codes := normalizeRegionCodes(regionParam)
-	if len(codes) == 0 {
-		return false
-	}
-	got := strings.TrimSpace(strings.ToUpper(iata))
-	if got == "" {
-		return false
-	}
-	for _, c := range codes {
-		if c == got {
-			return true
-		}
-	}
-	return false
+	// A frequency-mode key ("910.525|SJC") is matched against frequencies
+	// and IATA codes together (region_frequency.go).
+	return regionKeyMatches(strings.TrimSpace(strings.ToUpper(iata)), normalizeRegionCodes(regionParam))
 }
 
-// observerIATAs returns observer ID → normalised IATA code. It reads the
-// observers table, so callers load it before taking s.mu (#2146).
+// observerIATAs returns observer ID → normalised IATA code, or in frequency
+// mode its "<frequency>|<IATA>" region key. It reads the observers table, so
+// callers load it before taking s.mu (#2146).
 func (s *PacketStore) observerIATAs() map[string]string {
 	obsIATA := make(map[string]string, 64)
 	if s.db == nil {
 		return obsIATA
 	}
-	// Frequency mode: the observer's frequency is its region (region_frequency.go).
+	// Frequency mode: the region key is "<frequency>|<IATA>" (region_frequency.go).
 	if s.db.regionByFrequency {
 		if keys, err := s.db.observerRegionKeys(""); err == nil {
 			return keys
@@ -8798,6 +8788,11 @@ func (s *PacketStore) computeAnalyticsHashSizes(region, area string) map[string]
 		areaNodes = s.resolveAreaNodes(area)
 	}
 	obsIATA := s.observerIATAs()
+	// Frequency mode: home regions for a frequency-only selection are chosen
+	// over frequencies alone (frequencyOnlyKeys).
+	if s.db != nil && s.db.regionByFrequency && frequencyOnlySelection(normalizeRegionCodes(region)) {
+		obsIATA = frequencyOnlyKeys(obsIATA)
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()

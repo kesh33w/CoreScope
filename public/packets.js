@@ -1501,7 +1501,7 @@
         if (RegionFilter.getRegionParam()) {
           const selectedRegions = RegionFilter.getRegionParam().split(',');
           const obs = observerMap.get(p.observer_id);
-          if (!obs || !selectedRegions.includes(RegionFilter.observerKey(obs))) return false;
+          if (!obs || !RegionFilter.keyMatches(RegionFilter.observerKey(obs), selectedRegions)) return false;
         }
         if (filters.node && !(p.decoded_json || '').includes(filters.node)) return false;
         if (filters.channel && !packetMatchesChannel(p, filters.channel)) return false;

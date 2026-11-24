@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Region filter frequency mode now shows a Region dropdown beside the Frequency one, so a deployment can be narrowed to one region of a network (`?region=910.525,SJC`). Choosing a frequency limits the Region list to regions with observers on it; quick picks work again in this mode. A frequency on its own gives the same results as before; IATA mode is unchanged.
 - Add region filter frequency mode (`regionFilter.mode: "frequency"`): the region dropdown on every page lists observer frequencies instead of IATA codes, so a multi-network deployment can be viewed one network at a time. Off by default; IATA mode is unchanged.
 - Add configurable observer-region reception frequency policy and admin Frequency panel, with per-radio status tracking, bounded freshness, unknown policy and no historical deletion.
 
