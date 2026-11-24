@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -307,3 +308,47 @@ func TestResolveHopsAPI_ResponseShape(t *testing.T) {
 }
 
 // ─── Helpers used only in this test file ───────────────────────────────────────
+
+// An ambiguous prefix prefers the candidate placed in the requested region
+// over the one the region-blind tiers would pick.
+func TestResolveHopsAPI_RegionPreference(t *testing.T) {
+	srv, router := setupTestServer(t)
+	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
+		"ee1aaaaaaa", "Node-E1", 37.0, -122.0, "repeater")
+	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
+		"ee1bbbbbbb", "Node-E2", 38.0, -121.0, "repeater")
+	srv.store.InvalidateNodeCache()
+
+	resolve := func(query string) *HopResolution {
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, httptest.NewRequest("GET", "/api/resolve-hops?hops=ee1"+query, nil))
+		var result ResolveHopsResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+			t.Fatalf("bad JSON: %v", err)
+		}
+		return result.Resolved["ee1"]
+	}
+	blind := resolve("")
+	other := "ee1aaaaaaa"
+	if blind.Pubkey == other {
+		other = "ee1bbbbbbb"
+	}
+	srv.store.regionNodesMu.Lock()
+	srv.store.regionNodesCache = map[string]regionNodesEntry{"SMF": {keys: []string{other}, at: time.Now()}}
+	srv.store.regionNodesMu.Unlock()
+
+	hr := resolve("&region=SMF")
+	if hr.Pubkey != other || hr.Confidence != "region_preference" {
+		t.Fatalf("region SMF should pick %s (region_preference), got %v (%s)", other, hr.Pubkey, hr.Confidence)
+	}
+	if len(hr.Candidates) != 2 {
+		t.Fatalf("candidates must still list both, got %d", len(hr.Candidates))
+	}
+	// A region holding the blind pick changes nothing.
+	srv.store.regionNodesMu.Lock()
+	srv.store.regionNodesCache["SFO"] = regionNodesEntry{keys: []string{fmt.Sprint(blind.Pubkey)}, at: time.Now()}
+	srv.store.regionNodesMu.Unlock()
+	if hr := resolve("&region=SFO"); hr.Pubkey != blind.Pubkey || hr.Confidence != blind.Confidence {
+		t.Fatalf("in-region pick must be kept, got %v (%s)", hr.Pubkey, hr.Confidence)
+	}
+}
