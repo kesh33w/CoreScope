@@ -1040,12 +1040,6 @@
     return hopKeys.map((hop, i) => routeHopFromInferred(inferred[i].hop, inferred[i], roles.get(inferred[i].pubkey)));
   }
 
-  // The site-wide region filter, so /api/resolve-hops prefers same-prefix
-  // nodes in the region being viewed.
-  function resolveHopsRegionParam() {
-    return (typeof RegionFilter !== 'undefined' && RegionFilter.regionQueryString) ? RegionFilter.regionQueryString() : '';
-  }
-
   async function drawPacketRoute(hopKeys, origin, opts) {
     // Defensive: origin must be an object with pubkey/lat/lon/name. A bare
     // string slips through both branches at lines below and silently no-ops
@@ -1097,7 +1091,7 @@
     if (!inferred) {
       try {
         const hopList = (hopKeys || []).join(',');
-        const apiUrl = '/api/resolve-hops?hops=' + encodeURIComponent(hopList) + resolveHopsRegionParam();
+        const apiUrl = '/api/resolve-hops?hops=' + encodeURIComponent(hopList);
         const resp = await CSApi.fetch(apiUrl, { cache: 'no-cache' });
         if (resp.ok) {
           const json = await resp.json();
@@ -1369,7 +1363,7 @@
     let serverResolved = null;
     if (!inferred) {
       try {
-        const apiUrl = '/api/resolve-hops?hops=' + encodeURIComponent(canonicalPath.join(',')) + resolveHopsRegionParam();
+        const apiUrl = '/api/resolve-hops?hops=' + encodeURIComponent(canonicalPath.join(','));
         const resp = await CSApi.fetch(apiUrl, { cache: 'no-cache' });
         if (resp.ok) {
           const json = await resp.json();
