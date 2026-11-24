@@ -156,3 +156,55 @@ func TestBatchCommitClassify(t *testing.T) {
 		}
 	}
 }
+
+// A transaction the caller opens with a plain BEGIN statement on a pinned
+// connection (dbschema's observers rebuild does this) runs as-is: its writes
+// do not open the shared batch, and its own ROLLBACK or COMMIT ends it.
+func TestBatchCommitCallerBeginStatementRunsAsIs(t *testing.T) {
+	s, path := openBatchTestStore(t, maxBatchCommit)
+	defer s.Close()
+	ctx := context.Background()
+	if _, err := s.db.Exec("INSERT INTO batch_probe VALUES (1)"); err != nil {
+		t.Fatal(err) // leaves the shared batch open
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, end := range []string{"ROLLBACK", "COMMIT"} {
+		for _, q := range []string{"BEGIN IMMEDIATE", "INSERT INTO batch_probe VALUES (2)", end} {
+			if _, err := conn.ExecContext(ctx, q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+	}
+	conn.Close()
+	// BEGIN committed the open batch first; ROLLBACK dropped only its own row.
+	if n := committed(t, path); n != 2 {
+		t.Fatalf("committed rows = %d, want 2", n)
+	}
+}
+
+// A pre-v3.19 observers table (implicit rowid only) is rebuilt when the
+// ingestor opens with grouped commits, as the WAN aggregate does.
+func TestBatchCommitOpenRebuildsLegacyObservers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE observers (id TEXT PRIMARY KEY, name TEXT, iata TEXT, last_seen TEXT, first_seen TEXT, packet_count INTEGER DEFAULT 0);
+		INSERT INTO observers (id, name) VALUES ('a', 'A'), ('b', 'B'); DELETE FROM observers WHERE id = 'a'`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	s, err := OpenStoreWithBatchCommit(path, 300, "NORMAL", time.Second, 0)
+	if err != nil {
+		t.Fatalf("open legacy DB with grouped commits: %v", err)
+	}
+	defer s.Close()
+	var idx int64
+	if err := s.db.QueryRow("SELECT idx FROM observers WHERE id = 'b'").Scan(&idx); err != nil || idx != 2 {
+		t.Fatalf("observer b idx = %d, %v; want its old rowid 2", idx, err)
+	}
+}

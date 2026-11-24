@@ -48,7 +48,7 @@ func TestScopedObserverAPIKeepsSeparateRecordsAndNodeLocations(t *testing.T) {
 		}
 	}
 	// Reach queries project only the node endpoint, never the observer filter.
-	rows, err := srv.readReachRows(context.Background(), `SELECT ?, 'cd', 4, '["ab"]', NULL`, []interface{}{key + "@bay@SFO"})
+	rows, err := srv.readReachRows(context.Background(), `SELECT ?, 'cd', 1, 4, '["ab"]', NULL`, []interface{}{key + "@bay@SFO"})
 	if err != nil || len(rows) != 1 || rows[0].observerPK != key {
 		t.Fatalf("reach rows=%+v, err=%v", rows, err)
 	}

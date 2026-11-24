@@ -60,14 +60,14 @@ func (s *Server) handleCleanupCapabilities(w http.ResponseWriter, r *http.Reques
 func (s *Server) cleanupPreview(ctx context.Context, sel prunequeue.CleanupSelection) (cleanupPreview, error) {
 	p := cleanupPreview{Selection: sel, MaxObservationID: sel.MaxObservationID, RestartRequired: true}
 	where, args := sel.Where()
-	q := `SELECT COUNT(*),COUNT(DISTINCT o.transmission_id) FROM observations o JOIN observers ob ON ob.rowid=o.observer_idx WHERE ` + where
+	q := `SELECT COUNT(*),COUNT(DISTINCT o.transmission_id) FROM observations o JOIN observers ob ON ob.idx=o.observer_idx WHERE ` + where
 	if e := s.db.conn.QueryRowContext(ctx, q, args...).Scan(&p.Count, &p.Transmissions); e != nil {
 		return p, e
 	}
 	// Count only transmissions whose ENTIRE retained observation set is selected.
 	// Index on transmission_id bounds this anti-join to the selected observer's
 	// transmissions; no per-observation HTTP or unbounded result materialization.
-	q = `WITH selected AS (SELECT o.id,o.transmission_id FROM observations o JOIN observers ob ON ob.rowid=o.observer_idx WHERE ` + where + `) SELECT COUNT(*) FROM (SELECT DISTINCT transmission_id FROM selected) t WHERE NOT EXISTS (SELECT 1 FROM observations other WHERE other.transmission_id=t.transmission_id AND NOT EXISTS (SELECT 1 FROM selected x WHERE x.id=other.id))`
+	q = `WITH selected AS (SELECT o.id,o.transmission_id FROM observations o JOIN observers ob ON ob.idx=o.observer_idx WHERE ` + where + `) SELECT COUNT(*) FROM (SELECT DISTINCT transmission_id FROM selected) t WHERE NOT EXISTS (SELECT 1 FROM observations other WHERE other.transmission_id=t.transmission_id AND NOT EXISTS (SELECT 1 FROM selected x WHERE x.id=other.id))`
 	e := s.db.conn.QueryRowContext(ctx, q, args...).Scan(&p.ExclusiveTransmissions)
 	return p, e
 }
@@ -222,8 +222,8 @@ func (s *Server) handleCleanupObservers(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	rows, err := s.db.conn.QueryContext(ctx, `SELECT ob.id, COALESCE(ob.name,''),COALESCE(ob.iata,''),
- (SELECT COUNT(*) FROM observations o WHERE o.observer_idx=ob.rowid),
- COALESCE((SELECT MAX(o.timestamp) FROM observations o WHERE o.observer_idx=ob.rowid),0)
+ (SELECT COUNT(*) FROM observations o WHERE o.observer_idx=ob.idx),
+ COALESCE((SELECT MAX(o.timestamp) FROM observations o WHERE o.observer_idx=ob.idx),0)
  FROM observers ob WHERE instr(lower(COALESCE(ob.name,'')),lower(?))>0 OR instr(lower(ob.id),lower(?))>0
  ORDER BY lower(COALESCE(ob.name,'')),ob.id LIMIT 51`, term, term)
 	if err != nil {
