@@ -438,9 +438,16 @@
   }
 
   /** Render the filter bar into a container element */
+  // The outside-click listener closes over the container; leaving it on
+  // document pins a departed page's detached DOM.
+  function release(container) {
+    if (container && container._regionCleanup) { container._regionCleanup(); container._regionCleanup = null; }
+  }
+
   function render(container) {
-    // Clean up previous outside-click listener if any
-    if (container._regionCleanup) { container._regionCleanup(); container._regionCleanup = null; }
+    if (_container && _container !== container) release(_container);
+    _container = container;
+    release(container);
 
     var codes = Object.keys(_regions);
     if (_byFrequency) {
@@ -509,12 +516,23 @@
    *  which reloads a page that fetched before calling init(). Unknown codes
    *  are dropped either way. */
   async function initFilter(container, opts) {
+    if (_container && _container !== container) release(_container);
     _container = container;
     if (opts && opts.dropdown) container._forceDropdown = true;
     var urlChanged = applyUrlRegion();
     await fetchRegions();
+    // The page may have been torn down (destroy) while regions were loading.
+    if (_container !== container) return;
     render(container);
     if (urlChanged) _listeners.forEach(function (fn) { fn(getSelected()); });
+  }
+
+  /** Release the document listener and references held for `container`
+   *  (default: the current one). Call from a page's destroy(). */
+  function destroy(container) {
+    var c = container || _container;
+    release(c);
+    if (!container || container === _container) _container = null;
   }
 
   /** True when two selections (Set or null = all) hold the same codes. */
@@ -586,6 +604,7 @@
   window.RegionFilter = {
     init: initFilter,
     render: render,
+    destroy: destroy,
     getSelected: getSelected,
     getRegionParam: getRegionParam,
     observerKey: observerKey,

@@ -20,7 +20,7 @@ func cleanupTestServer(t *testing.T) *Server {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	_, e = db.Exec(`CREATE TABLE observers(id TEXT, name TEXT, iata TEXT); CREATE TABLE observations(id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_idx INTEGER, timestamp INTEGER); INSERT INTO observers VALUES('bad','Bad','SMF'),('good','Good','SMF'); INSERT INTO observations VALUES(1,10,1,100),(2,10,2,100),(3,11,1,200);`)
+	_, e = db.Exec(`CREATE TABLE observers(idx INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, name TEXT, iata TEXT); CREATE TABLE observations(id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_idx INTEGER, timestamp INTEGER); INSERT INTO observers(id,name,iata) VALUES('bad','Bad','SMF'),('good','Good','SMF'); INSERT INTO observations VALUES(1,10,1,100),(2,10,2,100),(3,11,1,200);`)
 	if e != nil {
 		t.Fatal(e)
 	}

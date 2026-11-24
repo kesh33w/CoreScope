@@ -384,7 +384,7 @@ func (db *DB) transmissionBaseSQL() (selectCols, observerJoin string) {
 				SELECT id FROM observations WHERE transmission_id = t.id
 				ORDER BY length(COALESCE(path_json,'')) DESC LIMIT 1
 			)
-			LEFT JOIN observers obs ON obs.rowid = o.observer_idx`
+			LEFT JOIN observers obs ON obs.idx = o.observer_idx`
 	} else {
 		selectCols = `t.id, t.raw_hex, t.hash, t.first_seen, t.route_type, t.payload_type, t.decoded_json,
 			COALESCE((SELECT COUNT(*) FROM observations WHERE transmission_id = t.id), 0) AS observation_count,
@@ -849,13 +849,13 @@ func (db *DB) QueryGroupedPackets(q PacketQuery) (*PacketResult, error) {
 			COALESCE((SELECT MAX(strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ', oi.timestamp, 'unixepoch')) FROM observations oi WHERE oi.transmission_id = t.id), t.first_seen) AS latest,
 			obs.id AS observer_id, obs.name AS observer_name, COALESCE(obs.iata, '') AS observer_iata,
 			o.snr, o.rssi, o.path_json,
-			COALESCE((SELECT GROUP_CONCAT(DISTINCT obi.iata) FROM observations oi JOIN observers obi ON obi.rowid = oi.observer_idx WHERE oi.transmission_id = t.id AND obi.iata IS NOT NULL AND obi.iata != ''), '') AS distinct_iatas`+scopeNameCol+`
+			COALESCE((SELECT GROUP_CONCAT(DISTINCT obi.iata) FROM observations oi JOIN observers obi ON obi.idx = oi.observer_idx WHERE oi.transmission_id = t.id AND obi.iata IS NOT NULL AND obi.iata != ''), '') AS distinct_iatas`+scopeNameCol+`
 		FROM transmissions t
 		LEFT JOIN observations o ON o.id = (
 			SELECT id FROM observations WHERE transmission_id = t.id
 			ORDER BY length(COALESCE(path_json,'')) DESC LIMIT 1
 		)
-		LEFT JOIN observers obs ON obs.rowid = o.observer_idx
+		LEFT JOIN observers obs ON obs.idx = o.observer_idx
 		%s ORDER BY latest DESC LIMIT ? OFFSET ?`, w)
 	} else {
 		querySQL = fmt.Sprintf(`SELECT t.hash, t.first_seen, t.raw_hex, t.decoded_json, t.payload_type, t.route_type,
@@ -1056,7 +1056,7 @@ func (db *DB) buildTransmissionWhere(q PacketQuery) ([]string, []interface{}) {
 		placeholders := strings.Repeat("?,", len(ids))
 		placeholders = placeholders[:len(placeholders)-1]
 		if db.isV3 {
-			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.rowid = oi.observer_idx WHERE oi.transmission_id = t.id AND obi.id IN ("+placeholders+")"+directionFilter+")")
+			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.idx = oi.observer_idx WHERE oi.transmission_id = t.id AND obi.id IN ("+placeholders+")"+directionFilter+")")
 		} else {
 			where = append(where, "EXISTS (SELECT 1 FROM observations oi WHERE oi.transmission_id = t.id AND oi.observer_id IN ("+placeholders+")"+directionFilter+")")
 		}
@@ -1069,14 +1069,14 @@ func (db *DB) buildTransmissionWhere(q PacketQuery) ([]string, []interface{}) {
 	if q.Region != "" && db.regionByFrequency {
 		cond, condArgs := db.regionWhere("obi", q.Region)
 		if db.isV3 {
-			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.rowid = oi.observer_idx WHERE oi.transmission_id = t.id AND "+cond+")")
+			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.idx = oi.observer_idx WHERE oi.transmission_id = t.id AND "+cond+")")
 		} else {
 			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.id = oi.observer_id WHERE oi.transmission_id = t.id AND "+cond+")")
 		}
 		args = append(args, condArgs...)
 	} else if q.Region != "" {
 		if db.isV3 {
-			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.rowid = oi.observer_idx WHERE oi.transmission_id = t.id AND obi.iata = ?)")
+			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.idx = oi.observer_idx WHERE oi.transmission_id = t.id AND obi.iata = ?)")
 		} else {
 			where = append(where, "EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.id = oi.observer_id WHERE oi.transmission_id = t.id AND obi.iata = ?)")
 		}
@@ -1246,7 +1246,7 @@ func (db *DB) GetNodes(nq NodeQuery) ([]map[string]interface{}, int, map[string]
 			if err != nil {
 				return nil, 0, nil, err
 			}
-			joinCond := "obs.rowid = o.observer_idx"
+			joinCond := "obs.idx = o.observer_idx"
 			if !db.isV3 {
 				joinCond = "obs.id = o.observer_id"
 			}
@@ -1495,7 +1495,7 @@ func (db *DB) getObservationsForTransmissions(txIDs []int) map[int][]map[string]
 		querySQL = fmt.Sprintf(`SELECT o.transmission_id, o.id, obs.id AS observer_id, obs.name AS observer_name, COALESCE(obs.iata, '') AS observer_iata,
 			o.direction, o.snr, o.rssi, o.path_json, strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ', o.timestamp, 'unixepoch') AS obs_timestamp
 			FROM observations o
-			LEFT JOIN observers obs ON obs.rowid = o.observer_idx
+			LEFT JOIN observers obs ON obs.idx = o.observer_idx
 			WHERE o.transmission_id IN (%s)
 			ORDER BY o.timestamp DESC`, strings.Join(placeholders, ","))
 	} else {
@@ -1850,7 +1850,7 @@ func (db *DB) GetTraces(hash string) ([]map[string]interface{}, error) {
 			o.snr, o.rssi, o.path_json
 			FROM observations o
 			JOIN transmissions t ON t.id = o.transmission_id
-			LEFT JOIN observers obs ON obs.rowid = o.observer_idx
+			LEFT JOIN observers obs ON obs.idx = o.observer_idx
 			WHERE t.hash = ?
 			ORDER BY o.timestamp ASC`
 	} else {
@@ -1974,17 +1974,17 @@ func (db *DB) GetChannels(region ...string) ([]map[string]interface{}, error) {
 						MAX(t.first_seen) AS last_activity,
 						(SELECT t2.decoded_json FROM transmissions t2
 						 JOIN observations o2 ON o2.transmission_id = t2.id
-						 LEFT JOIN observers obs2 ON obs2.rowid = o2.observer_idx
+						 LEFT JOIN observers obs2 ON obs2.idx = o2.observer_idx
 						 WHERE t2.channel_hash = t.channel_hash AND t2.payload_type = 5
-						 AND obs2.rowid IS NOT NULL AND %s
+						 AND obs2.idx IS NOT NULL AND %s
 						 ORDER BY t2.first_seen DESC LIMIT 1) AS sample_json
 					FROM transmissions t
 					JOIN observations o ON o.transmission_id = t.id
-					LEFT JOIN observers obs ON obs.rowid = o.observer_idx
+					LEFT JOIN observers obs ON obs.idx = o.observer_idx
 					WHERE t.payload_type = 5
 					AND t.channel_hash IS NOT NULL
 					AND t.channel_hash NOT LIKE 'enc_%%'
-					AND obs.rowid IS NOT NULL AND %s
+					AND obs.idx IS NOT NULL AND %s
 					GROUP BY t.channel_hash
 					ORDER BY last_activity DESC`, inRegion("obs2"), inRegion("obs"))
 			} else {
@@ -2121,10 +2121,10 @@ func (db *DB) GetEncryptedChannels(region ...string) ([]map[string]interface{}, 
 						MAX(t.first_seen) AS last_activity
 					FROM transmissions t
 					JOIN observations o ON o.transmission_id = t.id
-					LEFT JOIN observers obs ON obs.rowid = o.observer_idx
+					LEFT JOIN observers obs ON obs.idx = o.observer_idx
 					WHERE t.payload_type = 5
 					AND t.channel_hash LIKE 'enc_%%'
-					AND obs.rowid IS NOT NULL AND %s
+					AND obs.idx IS NOT NULL AND %s
 					GROUP BY t.channel_hash
 					ORDER BY last_activity DESC`, inRegion("obs"))
 			} else {
@@ -2260,7 +2260,7 @@ func (db *DB) GetChannelMessages(channelHash string, limit, offset int, region .
 		if db.isV3 {
 			regionFilter = fmt.Sprintf(` AND EXISTS (
 				SELECT 1 FROM observations o
-				JOIN observers obs ON obs.rowid = o.observer_idx
+				JOIN observers obs ON obs.idx = o.observer_idx
 				WHERE o.transmission_id = t.id
 				  AND %s)`, regionCond)
 		} else {
@@ -2362,7 +2362,7 @@ func (db *DB) GetChannelMessages(channelHash string, limit, offset int, region .
 				obs.id, obs.name, o.snr, o.path_json, o.timestamp` + scopeNameCol + `
 			FROM observations o
 			JOIN transmissions t ON t.id = o.transmission_id
-			LEFT JOIN observers obs ON obs.rowid = o.observer_idx
+			LEFT JOIN observers obs ON obs.idx = o.observer_idx
 			WHERE t.id IN (` + strings.Join(idPlaceholders, ",") + `)
 			ORDER BY o.id ASC`
 	} else {
@@ -2578,7 +2578,7 @@ func (db *DB) GetObserverPacketCounts(sinceEpoch int64) map[string]int {
 	if db.isV3 {
 		rows, err = db.conn.Query(`SELECT obs.id, COUNT(*) as cnt
 			FROM observations o
-			JOIN observers obs ON obs.rowid = o.observer_idx
+			JOIN observers obs ON obs.idx = o.observer_idx
 			WHERE o.timestamp > ?
 			GROUP BY obs.id`, sinceEpoch)
 	} else {

@@ -41,8 +41,12 @@ func ensureCleanupSchema(tx *sql.Tx) error {
 		}
 	}
 
-	// Refuse unsafe archive layouts after a future source schema migration. No
-	// delete happens until every archive can store every current column.
+	// A source table that gained a column since its archive was created (for
+	// example observers.idx, added by the v3.19 rebuild) gets that column added
+	// to the archive; older archive rows hold NULL there. Archive and restore
+	// name their columns, so column order does not matter. Anything else, such
+	// as missing leading archive keys, is refused: no delete happens until
+	// every archive can store every current column.
 	for _, p := range [][3]string{{"observations", "observation_cleanup_obs", "observer_key"}, {"transmissions", "observation_cleanup_tx", ""}, {"observers", "observation_cleanup_observers", ""}, {"observation_radios", "observation_cleanup_radios", ""}, {"advert_route_evidence", "observation_cleanup_advert", ""}} {
 		live, e := cleanupColumns(tx, p[0])
 		if e != nil {
@@ -52,15 +56,44 @@ func ensureCleanupSchema(tx *sql.Tx) error {
 		if e != nil {
 			return e
 		}
-		expected := append([]string{"cleanup_id"}, live...)
+		keys := []string{"cleanup_id"}
 		if p[2] != "" {
-			expected = append([]string{"cleanup_id", p[2]}, live...)
+			keys = append(keys, p[2])
 		}
-		if strings.Join(expected, ",") != strings.Join(arch, ",") {
+		if len(arch) < len(keys) || strings.Join(arch[:len(keys)], ",") != strings.Join(keys, ",") {
 			return fmt.Errorf("archive schema mismatch for %s; archive migration required before cleanup", p[0])
+		}
+		have := make(map[string]bool, len(arch))
+		for _, c := range arch {
+			have[c] = true
+		}
+		for _, c := range live {
+			if have[c] {
+				continue
+			}
+			if _, e := tx.Exec(`ALTER TABLE "` + p[1] + `" ADD COLUMN ` + quotedColumns([]string{c})); e != nil {
+				return fmt.Errorf("add %s.%s to cleanup archive: %w", p[0], c, e)
+			}
 		}
 	}
 	return nil
+}
+
+// archiveInsert copies rows of a live table into its cleanup archive by
+// column name. prefix holds the archive's leading key columns, filled from
+// prefixExprs; from is the SELECT's FROM/WHERE tail, with alias naming the
+// live table in it.
+func archiveInsert(tx *sql.Tx, verb, live, archive, alias string, prefix, prefixExprs []string, from string, args []interface{}) error {
+	cols, err := cleanupColumns(tx, live)
+	if err != nil {
+		return err
+	}
+	src := append([]string{}, prefixExprs...)
+	for _, c := range cols {
+		src = append(src, alias+"."+quotedColumns([]string{c}))
+	}
+	_, err = tx.Exec(verb+` INTO `+archive+` (`+quotedColumns(append(append([]string{}, prefix...), cols...))+`) SELECT `+strings.Join(src, ",")+` `+from, args...)
+	return err
 }
 
 func cleanupColumns(tx *sql.Tx, table string) ([]string, error) {
@@ -217,7 +250,7 @@ func (s *Store) processObservationCleanup(req prunequeue.CleanupRequest, between
 func cleanupDeleteBatch(tx *sql.Tx, req prunequeue.CleanupRequest, cursor int64) (int64, int64, error) {
 	where, args := req.Selection.Where()
 	args = append(args, cursor, cleanupBatchSize)
-	rows, err := tx.Query(`SELECT o.id FROM observations o JOIN observers ob ON ob.rowid=o.observer_idx WHERE `+where+` AND o.id>? ORDER BY o.id LIMIT ?`, args...)
+	rows, err := tx.Query(`SELECT o.id FROM observations o JOIN observers ob ON ob.idx=o.observer_idx WHERE `+where+` AND o.id>? ORDER BY o.id LIMIT ?`, args...)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -228,14 +261,19 @@ func cleanupDeleteBatch(tx *sql.Tx, req prunequeue.CleanupRequest, cursor int64)
 	ph, a := idList(ids)
 	backupArgs := append([]interface{}{req.ID}, a...)
 	// Complete backup rows and sparse radio metadata are written before delete.
-	for _, q := range []string{
-		`INSERT OR IGNORE INTO observation_cleanup_observers SELECT ?,ob.* FROM observers ob WHERE ob.rowid IN (SELECT observer_idx FROM observations WHERE id IN (` + ph + `))`,
-		`INSERT OR IGNORE INTO observation_cleanup_tx SELECT ?,t.* FROM transmissions t WHERE t.id IN (SELECT transmission_id FROM observations WHERE id IN (` + ph + `))`,
-		`INSERT INTO observation_cleanup_obs SELECT ?,ob.id,o.* FROM observations o JOIN observers ob ON ob.rowid=o.observer_idx WHERE o.id IN (` + ph + `)`,
-		`INSERT OR IGNORE INTO observation_cleanup_radios SELECT ?,r.* FROM observation_radios r WHERE observation_id IN (` + ph + `)`,
-		`INSERT OR IGNORE INTO observation_cleanup_advert SELECT ?,e.* FROM advert_route_evidence e WHERE tx_id IN (SELECT transmission_id FROM observations WHERE id IN (` + ph + `))`,
+	one := []string{"cleanup_id"}
+	for _, q := range []struct {
+		verb, live, archive, alias string
+		prefix, exprs              []string
+		from                       string
+	}{
+		{"INSERT OR IGNORE", "observers", "observation_cleanup_observers", "ob", one, []string{"?"}, `FROM observers ob WHERE ob.idx IN (SELECT observer_idx FROM observations WHERE id IN (` + ph + `))`},
+		{"INSERT OR IGNORE", "transmissions", "observation_cleanup_tx", "t", one, []string{"?"}, `FROM transmissions t WHERE t.id IN (SELECT transmission_id FROM observations WHERE id IN (` + ph + `))`},
+		{"INSERT", "observations", "observation_cleanup_obs", "o", []string{"cleanup_id", "observer_key"}, []string{"?", "ob.id"}, `FROM observations o JOIN observers ob ON ob.idx=o.observer_idx WHERE o.id IN (` + ph + `)`},
+		{"INSERT OR IGNORE", "observation_radios", "observation_cleanup_radios", "r", one, []string{"?"}, `FROM observation_radios r WHERE observation_id IN (` + ph + `)`},
+		{"INSERT OR IGNORE", "advert_route_evidence", "observation_cleanup_advert", "e", one, []string{"?"}, `FROM advert_route_evidence e WHERE tx_id IN (SELECT transmission_id FROM observations WHERE id IN (` + ph + `))`},
 	} {
-		if _, err = tx.Exec(q, backupArgs...); err != nil {
+		if err = archiveInsert(tx, q.verb, q.live, q.archive, q.alias, q.prefix, q.exprs, q.from, backupArgs); err != nil {
 			return 0, 0, fmt.Errorf("archive rows: %w", err)
 		}
 	}
@@ -307,6 +345,16 @@ func cleanupRestoreBatch(tx *sql.Tx, req prunequeue.CleanupRequest, cursor int64
 	if err != nil {
 		return 0, 0, err
 	}
+	// idx is the observer's key; a restored observer gets a fresh one (an
+	// archived idx may belong to another observer by now). Observations are
+	// re-linked by observer id below.
+	kept := bc[:0]
+	for _, c := range bc {
+		if c != "idx" {
+			kept = append(kept, c)
+		}
+	}
+	bc = kept
 	bs := make([]string, len(bc))
 	for i, c := range bc {
 		bs[i] = `b."` + c + `"`
@@ -332,7 +380,7 @@ func cleanupRestoreBatch(tx *sql.Tx, req prunequeue.CleanupRequest, cursor int64
 		case "transmission_id":
 			source = append(source, "t.id")
 		case "observer_idx":
-			source = append(source, "ob.rowid")
+			source = append(source, "ob.idx")
 		default:
 			source = append(source, `b."`+c+`"`)
 		}
@@ -342,7 +390,7 @@ func cleanupRestoreBatch(tx *sql.Tx, req prunequeue.CleanupRequest, cursor int64
 		return 0, 0, err
 	}
 	n, _ := res.RowsAffected()
-	_, err = tx.Exec(`INSERT OR IGNORE INTO observation_radios(observation_id,radio_id) SELECT r.observation_id,r.radio_id FROM observation_cleanup_radios r JOIN observations o ON o.id=r.observation_id JOIN observation_cleanup_obs b ON b.cleanup_id=r.cleanup_id AND b.id=o.id JOIN observers ob ON ob.rowid=o.observer_idx AND ob.id=b.observer_key JOIN observation_cleanup_tx bt ON bt.cleanup_id=b.cleanup_id AND bt.id=b.transmission_id JOIN transmissions t ON t.id=o.transmission_id AND t.hash=bt.hash WHERE o.timestamp=b.timestamp AND COALESCE(o.path_json,'')=COALESCE(b.path_json,'') AND COALESCE(o.raw_hex,'')=COALESCE(b.raw_hex,'') AND r.cleanup_id=? AND r.observation_id IN (`+ph+`)`, args...)
+	_, err = tx.Exec(`INSERT OR IGNORE INTO observation_radios(observation_id,radio_id) SELECT r.observation_id,r.radio_id FROM observation_cleanup_radios r JOIN observations o ON o.id=r.observation_id JOIN observation_cleanup_obs b ON b.cleanup_id=r.cleanup_id AND b.id=o.id JOIN observers ob ON ob.idx=o.observer_idx AND ob.id=b.observer_key JOIN observation_cleanup_tx bt ON bt.cleanup_id=b.cleanup_id AND bt.id=b.transmission_id JOIN transmissions t ON t.id=o.transmission_id AND t.hash=bt.hash WHERE o.timestamp=b.timestamp AND COALESCE(o.path_json,'')=COALESCE(b.path_json,'') AND COALESCE(o.raw_hex,'')=COALESCE(b.raw_hex,'') AND r.cleanup_id=? AND r.observation_id IN (`+ph+`)`, args...)
 	if err != nil {
 		return 0, 0, err
 	}

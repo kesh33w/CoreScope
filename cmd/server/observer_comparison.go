@@ -86,7 +86,7 @@ func (db *DB) queryObserverComparison(ctx context.Context, ids []string, since, 
 	if !db.isV3 {
 		return nil, errors.New("reception comparison requires v3 numeric timestamps")
 	}
-	observerCol, join := "obs.id", "obs.rowid=o.observer_idx"
+	observerCol, join := "obs.id", "obs.idx=o.observer_idx"
 	lo, hi := float64(since.UnixNano())/1e9, float64(until.UnixNano())/1e9
 	stamp := "o.timestamp"
 	raw := "NULL"

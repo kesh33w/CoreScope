@@ -225,7 +225,7 @@ func TestObservationCleanupPartialFailureRecoverableAndObserverRestored(t *testi
 	if e != nil || rr.Restored != 500 {
 		t.Fatalf("partial restore %+v %v", rr, e)
 	}
-	if n := cleanupCount(t, s, "SELECT count(*) FROM observations o JOIN observers ob ON ob.rowid=o.observer_idx WHERE ob.id='bad'"); n != 500 {
+	if n := cleanupCount(t, s, "SELECT count(*) FROM observations o JOIN observers ob ON ob.idx=o.observer_idx WHERE ob.id='bad'"); n != 500 {
 		t.Fatalf("observer restore total %d", n)
 	}
 }
@@ -235,7 +235,9 @@ func TestObservationCleanupSchemaMismatchFailsClosed(t *testing.T) {
 	if e := s.WriterTx("test", ensureCleanupSchema); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := s.db.Exec(`ALTER TABLE observations ADD COLUMN future_metadata TEXT`); e != nil {
+	// An archive whose leading key columns are not the expected ones cannot be
+	// trusted to restore: no delete happens.
+	if _, e := s.db.Exec(`ALTER TABLE observation_cleanup_obs RENAME COLUMN observer_key TO renamed_key`); e != nil {
 		t.Fatal(e)
 	}
 	r, e := s.ProcessObservationCleanup(cleanupReq(3))
@@ -244,6 +246,38 @@ func TestObservationCleanupSchemaMismatchFailsClosed(t *testing.T) {
 	}
 	if n := cleanupCount(t, s, "SELECT count(*) FROM observations"); n != 4 {
 		t.Fatalf("deleted despite mismatch %d", n)
+	}
+}
+
+// A source column added after the archive was created (as observers.idx is by
+// the v3.19 rebuild) is added to the archive, archived and restored.
+func TestObservationCleanupArchiveGainsNewSourceColumn(t *testing.T) {
+	s := cleanupTestStore(t)
+	cleanupSeed(t, s, 3)
+	if e := s.WriterTx("test", ensureCleanupSchema); e != nil {
+		t.Fatal(e)
+	}
+	// Simulate an archive made before observers had idx, plus a new column.
+	if _, e := s.db.Exec(`ALTER TABLE observation_cleanup_observers DROP COLUMN idx; ALTER TABLE observations ADD COLUMN future_metadata TEXT; UPDATE observations SET future_metadata='kept-' || id`); e != nil {
+		t.Fatal(e)
+	}
+	req := cleanupReq(3)
+	r, e := s.ProcessObservationCleanup(req)
+	if e != nil || r.Deleted != 3 {
+		t.Fatalf("cleanup %+v %v", r, e)
+	}
+	if n := cleanupCount(t, s, "SELECT count(*) FROM observation_cleanup_obs WHERE future_metadata LIKE 'kept-%'"); n != 3 {
+		t.Fatalf("archived new column %d", n)
+	}
+	if n := cleanupCount(t, s, "SELECT count(*) FROM observation_cleanup_observers WHERE idx IS NOT NULL"); n == 0 {
+		t.Fatalf("observer idx not archived")
+	}
+	rr, e := s.ProcessObservationCleanup(prunequeue.CleanupRequest{ID: "fe0123", RequestedAt: time.Now().UTC(), RestoreID: req.ID})
+	if e != nil || rr.Restored != 3 {
+		t.Fatalf("restore %+v %v", rr, e)
+	}
+	if n := cleanupCount(t, s, "SELECT count(*) FROM observations WHERE future_metadata LIKE 'kept-%'"); n != 4 {
+		t.Fatalf("restored new column %d", n)
 	}
 }
 func TestObservationCleanupRestoreDoesNotOverwriteNewObservationRadio(t *testing.T) {
@@ -308,7 +342,7 @@ func TestObservationCleanupSelectionUsesObserverIndex(t *testing.T) {
 	sel.To = 9999
 	where, args := sel.Where()
 	args = append(args, 0, cleanupBatchSize)
-	rows, e := s.db.Query(`EXPLAIN QUERY PLAN SELECT o.id FROM observations o JOIN observers ob ON ob.rowid=o.observer_idx WHERE `+where+` AND o.id>? ORDER BY o.id LIMIT ?`, args...)
+	rows, e := s.db.Query(`EXPLAIN QUERY PLAN SELECT o.id FROM observations o JOIN observers ob ON ob.idx=o.observer_idx WHERE `+where+` AND o.id>? ORDER BY o.id LIMIT ?`, args...)
 	if e != nil {
 		t.Fatal(e)
 	}

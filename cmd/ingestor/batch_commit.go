@@ -178,6 +178,12 @@ func (b *batchConn) before(ctx context.Context, kind stmtKind) error {
 	if b.depth > 0 {
 		return nil // inside an application transaction: run as-is
 	}
+	if !b.outer && !b.c.AutoCommit() {
+		// The caller opened its own transaction with a plain BEGIN statement
+		// (e.g. dbschema's observers rebuild on a pinned connection): run
+		// as-is until its own COMMIT or ROLLBACK ends it.
+		return nil
+	}
 	switch {
 	case kind == kindControl:
 		return b.commit()
