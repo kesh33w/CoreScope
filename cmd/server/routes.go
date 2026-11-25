@@ -281,6 +281,10 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	// for /api/* — see docs/deployment-behind-cdn.md.
 	r.Use(cdnDetectionMiddleware)
 
+	// Expand region preset codes in ?region= (frequency mode) before any
+	// handler reads it. See region_presets.go.
+	r.Use(s.regionPresetMiddleware)
+
 	// Optional user management: routes exist only when the feature is on.
 	if s.auth != nil {
 		s.registerAuthRoutes(r)
@@ -636,6 +640,9 @@ func (s *Server) handleConfigAreasPolygons(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleConfigRegions(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.RegionByFrequency() {
 		regions, _ := s.regionFilterOptions()
+		for _, p := range s.cfg.RegionPresets() {
+			regions[p.Code] = p.Label
+		}
 		writeJSON(w, regions)
 		return
 	}
@@ -664,6 +671,9 @@ type RegionQuickPicksResponse struct {
 	// codes of recently seen observers on it, so choosing a frequency
 	// narrows the region dropdown.
 	FrequencyRegions map[string][]string `json:"frequencyRegions,omitempty"`
+	// Presets (frequency mode only) are config regionFilter.presets,
+	// normalised: one code standing for several frequencies and IATA codes.
+	Presets []RegionPreset `json:"presets,omitempty"`
 }
 
 func (s *Server) handleConfigRegionQuickPicks(w http.ResponseWriter, r *http.Request) {
@@ -672,6 +682,7 @@ func (s *Server) handleConfigRegionQuickPicks(w http.ResponseWriter, r *http.Req
 		// Picks stay groups of IATA codes, offered in the region dropdown.
 		resp.Mode = "frequency"
 		_, resp.FrequencyRegions = s.regionFilterOptions()
+		resp.Presets = s.cfg.RegionPresets()
 	}
 	writeJSON(w, resp)
 }

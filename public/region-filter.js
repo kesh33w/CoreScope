@@ -11,6 +11,7 @@
   var _picks = [];         // configured quick picks: [{ name, description, regions: [code] }]
   var _byFrequency = false; // server regionFilter.mode "frequency": a frequency dropdown beside the region one
   var _freqRegions = {};    // frequency mode: { "910.525": ["OAK", "SJC", ...] }
+  var _presets = [];        // frequency mode: [{ code, label, regions: ["910.525", "SJC", ...] }]
 
   /** True for a selection code that is a frequency in MHz ("910.525"). In
    *  frequency mode the selection holds frequencies and IATA codes. */
@@ -133,6 +134,7 @@
       _picks = (data && Array.isArray(data.quickPicks)) ? data.quickPicks : [];
       _byFrequency = !!(data && data.mode === 'frequency');
       _freqRegions = (data && data.frequencyRegions) || {};
+      _presets = (_byFrequency && data && Array.isArray(data.presets)) ? data.presets : [];
     } catch (e) {
       // Offline or an older server without the endpoint: the region filter
       // works exactly as before, just without quick picks.
@@ -160,7 +162,38 @@
       _regions = {};
     }
     await picksLoaded;
+    expandSelectedPresets();
     return _regions;
+  }
+
+  function presetByCode(code) {
+    var c = String(code).toUpperCase();
+    for (var p of _presets) if (p.code === c) return p;
+    return null;
+  }
+
+  /** A preset code in the selection (from a ?region= link) stands for its
+   *  frequencies and codes; the selection holds those, so client-side
+   *  filters and the dropdowns work on them. */
+  function expandSelectedPresets() {
+    if (!_selected || !_presets.length) return;
+    var out = new Set();
+    var changed = false;
+    _selected.forEach(function (c) {
+      var p = presetByCode(c);
+      if (p) { changed = true; p.regions.forEach(function (r) { out.add(r); }); }
+      else out.add(c);
+    });
+    if (!changed) return;
+    _selected = out.size ? out : null;
+    saveToStorage();
+  }
+
+  /** Presets as picks that set the whole selection, frequencies included. */
+  function presetPicks() {
+    return _presets.map(function (p) {
+      return { name: p.label || p.code, description: '', codes: p.regions.slice(), whole: true };
+    });
   }
 
   function esc(v) {
@@ -184,10 +217,15 @@
 
   /** The pick whose codes are exactly the current selection, if any. */
   function activePick(picks) {
+    var all = _selected ? Array.from(_selected) : [];
+    for (var w of picks) {
+      if (!w.whole || w.codes.length !== all.length) continue;
+      if (w.codes.every(function (c) { return all.indexOf(c) >= 0; })) return w;
+    }
     var sel = selectedOfKind('region');
     if (sel.length === 0) return null;
     for (var p of picks) {
-      if (p.codes.length !== sel.length) continue;
+      if (p.whole || p.codes.length !== sel.length) continue;
       if (p.codes.every(function (c) { return sel.indexOf(c) >= 0; })) return p;
     }
     return null;
@@ -231,7 +269,8 @@
   function applyPick(picks, index) {
     var p = picks[index];
     if (!p) return;
-    setKindSelection('region', activePick(picks) === p ? [] : p.codes.slice());
+    if (p.whole) _selected = activePick(picks) === p ? null : new Set(p.codes);
+    else setKindSelection('region', activePick(picks) === p ? [] : p.codes.slice());
     saveToStorage();
     if (_container) render(_container);
     _listeners.forEach(function (fn) { fn(getSelected()); });
@@ -292,7 +331,7 @@
     return {
       kind: 'region',
       codes: codes,
-      picks: presentPicks(codes),
+      picks: presetPicks().concat(presentPicks(codes)),
       selected: function () { return selectedOfKind('region'); },
       label: function (code) {
         var configLabel = _regions[code];
@@ -420,7 +459,7 @@
   function renderPair(container, codes) {
     var freqs = codes.filter(isFrequencyCode)
       .sort(function (a, b) { return parseFloat(a) - parseFloat(b); });
-    var allRegions = codes.filter(function (c) { return !isFrequencyCode(c); }).sort();
+    var allRegions = codes.filter(function (c) { return !isFrequencyCode(c) && !presetByCode(c); }).sort();
     var regions = regionsForFrequencies(selectedOfKind('freq'), allRegions);
     container.innerHTML = '<div class="region-filter-pair">' +
       '<div class="region-filter-part" data-kind="freq"></div>' +
@@ -498,11 +537,12 @@
     // so drop unknown codes here; with none left, that's all regions, the same
     // as the cleanup does on a fresh load.
     if (_loaded) codes = codes.filter(function (c) { return Object.prototype.hasOwnProperty.call(_regions, c); });
-    var next = codes.length > 0 ? new Set(codes) : null;
-    var changed = !sameSelection(_selected, next);
-    _selected = next;
+    var prev = _selected;
+    _selected = codes.length > 0 ? new Set(codes) : null;
     saveToStorage();
-    return changed;
+    // Presets are known once loaded; before that, fetchRegions expands them.
+    if (_loaded) expandSelectedPresets();
+    return !sameSelection(prev, _selected);
   }
 
   /** Initialize filter in a container, fetch regions, render, return promise.
