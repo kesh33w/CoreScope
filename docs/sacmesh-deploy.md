@@ -11,9 +11,11 @@
 
 ```bash
 git fetch kesh --tags && git checkout v3.19.0+sacmesh.5
-scripts/sacmesh-deploy.sh --dry-run both   # build and stage only
+scripts/sacmesh-deploy.sh --dry-run both   # build the images only
 scripts/sacmesh-deploy.sh both             # wan first, then scope
 ```
+
+It calls `sudo` for docker and for scope's server binary, so run it from a terminal. Without one (an agent), give sudo an askpass helper: put a `sudo` shim that runs `/usr/bin/sudo -A "$@"` first on `PATH` and set `SUDO_ASKPASS`.
 
 `go`, `zig` (for the static musl build; `pip install ziglang` in a venv plus a `zig` wrapper on `PATH` works), `docker` through `sudo`, `curl` and `python3` must be available. `WAN_DIR`, `SCOPE_DIR`, `WAN_HEALTH`, `SCOPE_HEALTH`, `HEALTH_TIMEOUT` (seconds, default 300) and `DOCKER` (default `sudo docker`) override the defaults.
 
