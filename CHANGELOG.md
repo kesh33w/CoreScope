@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Region presets (`regionFilter.presets`, frequency mode only): one code for a fixed set of frequencies and regions, e.g. `BAY910` = 910.525 MHz in the Bay Area. They appear in `/api/config/regions`, so apps that send one region at a time (NodeScope) can pick them, and in the web Region dropdown. `?region=` expands them on the server before any handler reads it.
+- Add `scripts/sacmesh-deploy.sh`, the SacMesh deploy for WAN and scope: builds the tagged commit, swaps it into the running image, keeps scope's bind-mounted server owned by uid 1000, waits for `/api/health` to report the new commit and rolls back if it does not. See `docs/sacmesh-deploy.md`.
 - Region filter frequency mode now shows a Region dropdown beside the Frequency one, so a deployment can be narrowed to one region of a network (`?region=910.525,SJC`). Choosing a frequency limits the Region list to regions with observers on it; quick picks work again in this mode. A frequency on its own gives the same results as before; IATA mode is unchanged.
 - Add region filter frequency mode (`regionFilter.mode: "frequency"`): the region dropdown on every page lists observer frequencies instead of IATA codes, so a multi-network deployment can be viewed one network at a time. Off by default; IATA mode is unchanged.
 - Add configurable observer-region reception frequency policy and admin Frequency panel, with per-radio status tracking, bounded freshness, unknown policy and no historical deletion.

@@ -39,6 +39,9 @@ import (
 type RegionFilterConfig struct {
 	// Mode is "iata" (default) or "frequency".
 	Mode string `json:"mode,omitempty"`
+	// Presets name fixed selections of frequencies and IATA codes
+	// (frequency mode only). See region_presets.go.
+	Presets []RegionPreset `json:"presets,omitempty"`
 }
 
 // RegionByFrequency reports whether regionFilter.mode is "frequency".

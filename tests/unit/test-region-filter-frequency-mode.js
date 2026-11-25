@@ -180,6 +180,46 @@ const IATA = {
     assert.match(c.querySelector(REGION_PART).innerHTML, />Bay ▾/);
   });
 
+  const PRESET = {
+    '/api/config/regions': Object.assign({ BAY910: 'Bay Area 910' }, FREQ['/api/config/regions']),
+    '/api/config/region-quick-picks': Object.assign({}, FREQ['/api/config/region-quick-picks'], {
+      quickPicks: [],
+      presets: [{ code: 'BAY910', label: 'Bay Area 910', regions: ['910.525', 'OAK', 'SJC'] }],
+    }),
+  };
+
+  await test('a preset is a pick in the region dropdown, not a region', async () => {
+    const rf = buildCtx(PRESET);
+    await rf.fetchRegions();
+    const c = el();
+    rf.render(c);
+    const region = c.querySelector(REGION_PART).innerHTML;
+    assert.match(region, /data-pick="0"[^>]*> <strong>Bay Area 910/);
+    assert.doesNotMatch(region, /data-region="BAY910"/);
+    assert.doesNotMatch(c.querySelector(FREQ_PART).innerHTML, /BAY910/);
+  });
+
+  await test('choosing a preset sets its frequency and regions; again clears', async () => {
+    const rf = buildCtx(PRESET);
+    const c = el();
+    await rf.init(c);
+    c.querySelector(REGION_PART).querySelector('.region-dropdown-menu')
+      .onchange({ target: { dataset: { pick: '0' } } });
+    assert.strictEqual(rf.getRegionParam(), '910.525,OAK,SJC');
+    assert.match(c.querySelector(REGION_PART).innerHTML, />Bay Area 910 ▾/);
+    assert.match(c.querySelector(FREQ_PART).innerHTML, />910\.525 MHz ▾/);
+    c.querySelector(REGION_PART).querySelector('.region-dropdown-menu')
+      .onchange({ target: { dataset: { pick: '0' } } });
+    assert.strictEqual(rf.getRegionParam(), '');
+  });
+
+  await test('a preset code in the URL is expanded once presets load', async () => {
+    const rf = buildCtx(PRESET);
+    rf.setSelected(['BAY910']);
+    await rf.fetchRegions();
+    assert.deepStrictEqual([...rf.getSelected()].sort(), ['910.525', 'OAK', 'SJC']);
+  });
+
   await test('iata mode keeps the Region pills', async () => {
     const rf = buildCtx(IATA);
     await rf.fetchRegions();
