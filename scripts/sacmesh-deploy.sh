@@ -12,8 +12,8 @@
 # /api/health to report the new commit. If that does not happen it puts the
 # backups back and restarts again. Nothing touches the databases or
 # config.json, so a deploy that needs a schema change or config edit still
-# needs its own plan. --dry-run builds and stages everything, including the
-# image, but changes no running instance.
+# needs its own plan. --dry-run builds everything, including the image, then
+# removes the staging folder and changes no running instance.
 #
 # Needs: a clean checkout at an exact v*+sacmesh.N tag, go, zig (static musl
 # cross-build, see Makefile), docker (through sudo unless DOCKER is set),
@@ -168,6 +168,8 @@ EOF
   } >"$stage/ROLLBACK.txt"
 
   if [[ $DRY_RUN == 1 ]]; then
+    # Keep the image; drop the folder so the real run can stage it again.
+    rm -rf "$stage"
     log "$name: dry run, leaving the instance on $prev_commit"
     return 0
   fi
