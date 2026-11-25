@@ -1,307 +1,51 @@
-# CoreScope
+# CoreScope: SacMesh fork
 
-**New: observer frequency filtering.** Define independent expected receiver frequencies for any IATA region before observations enter analytics. Add, edit, or remove multiple rules in Customization → Frequency, with per-region tolerance and unknown/stale metadata handling. [Behavior and limits](OBSERVER_FREQUENCY_FILTER.md).
+This is SacMesh's fork of [CoreScope](https://github.com/Kpa-clawbot/CoreScope), the self-hosted MeshCore packet analyzer: an MQTT ingestor, a Go web server and API, and a browser UI with live map, packets, channels and analytics. The fork runs two SacMesh instances from one build:
 
-This is the SacMesh fork of [upstream CoreScope](https://github.com/Kpa-clawbot/CoreScope), based on v3.17.0. The fork release is `v3.17.0+sacmesh.1`. See [fork maintenance](docs/fork-maintenance.md) for the retained changes and upgrade checks. Badges below report upstream CI, not this fork's validation.
+| Instance | What it shows | Region filter |
+|---|---|---|
+| [scope.sacmesh.org](https://scope.sacmesh.org) | SacMesh's own observers (SMF, SCK, OAK, SFO), with a 909.875 MHz policy for SMF and HydraHop hop names | IATA codes |
+| [wan.sacmesh.org](https://wan.sacmesh.org) | An aggregate of several West Coast networks, fed by [meshfeed](cmd/meshfeed-publisher/README.md) | Frequency + region, with presets |
 
-[![Go Server Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/go-server-coverage.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
-[![Go Ingestor Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/go-ingestor-coverage.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
-[![E2E Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/e2e-tests.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
-[![Frontend Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/badges/frontend-coverage.json)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
-[![Deploy](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml/badge.svg)](https://github.com/Kpa-clawbot/CoreScope/actions/workflows/deploy.yml)
+Everything the fork adds is **opt-in**. With none of its configuration keys or flags set, CoreScope behaves like upstream, apart from the bug fixes listed in the [feature reference](docs/fork/README.md#fixes-to-inherited-behaviour).
 
-> High-performance mesh network analyzer powered by Go. Sub-millisecond packet queries, ~300 MB memory for 56K+ packets, real-time WebSocket broadcast, full channel decryption.
+| | |
+|---|---|
+| **Main line** | [`master`](https://github.com/kesh33w/CoreScope/tree/master): what runs on both instances |
+| **Releases** | `v<upstream>+sacmesh.N` tags, e.g. `v3.19.0+sacmesh.5`. Changes: [CHANGELOG.md](CHANGELOG.md) |
+| **Upstream base** | `Kpa-clawbot/CoreScope` `v3.19.0` (24 Nov 2026): see [syncing with upstream](docs/fork/upstream-sync.md) |
+| **Upstream docs** | [UPSTREAM-README.md](UPSTREAM-README.md): features, performance, Docker install, configuration |
 
-Self-hosted, open-source MeshCore packet analyzer. Collects MeshCore packets via MQTT, decodes them in real time, and presents a full web UI with live packet feed, interactive maps, channel chat, packet tracing, and per-node analytics.
+## What this fork changes
 
-## ⚡ Performance
+Full reference, with every config key, flag and default: **[docs/fork/README.md](docs/fork/README.md)**.
 
-The Go backend serves its packet and analytics API from an in-memory packet store with 7 indexes (hash, txID, obsID, observer, node, path hop, payload type). Recent queries use that cache; this fork also reads SQLite for historical intervals no longer fully cached.
+| Area | Change | Default |
+|---|---|---|
+| **Region filter** | [Frequency mode](docs/fork/README.md#region-filter-frequency-mode): a Frequency dropdown beside the Region one, so a multi-network instance can be viewed one network, and one region of it, at a time. | Off (IATA) |
+| | [Region presets](docs/fork/README.md#region-presets): one code for a frequency plus a set of regions (`BAY910`), for apps such as NodeScope that send one region at a time. | None |
+| **Ingest** | [Observer reception frequency policy](docs/fork/README.md#observer-reception-frequency-policy): drop receptions an observer heard on the wrong frequency for its region, before they reach analytics. | Off |
+| | [Hop alias names](docs/fork/README.md#hop-alias-names): trusted observers (HydraHop) name path hops that never advertise. | Off |
+| | [Per-radio observer feeds](docs/fork/README.md#per-radio-observer-feeds): a multi-radio observer's radios are stored as separate observers. | On when the uploader sends `observer_radio_id` |
+| | [Channel-hash prefilter](docs/fork/README.md#channel-hash-prefilter) for large public hashtag lists. | Always on |
+| **Database** | [Grouped writer commits](docs/fork/README.md#grouped-writer-commits) and WAL checkpoint tuning, for SSD wear. | Off |
+| | [Recoverable observation cleanup](docs/fork/README.md#recoverable-observation-cleanup): archive and remove one observer's bad time range, with restore. | Admin-only |
+| **Analysis** | [Observer comparison](docs/fork/README.md#observer-comparison): two receivers side by side, before and after a hardware change. | Always on |
+| | [Live path inference](docs/fork/README.md#live-path-inference) anchored to each receiver, with gaps for unknown hops. | Always on |
+| **Operations** | [Private connection telemetry and operator control](docs/fork/README.md#private-telemetry-and-operator-control) over local Unix sockets. | Off |
+| | [meshfeed publisher](docs/fork/README.md#meshfeed-publisher): derived MQTT topics (decoded, merged, node directory). | Separate binary |
+| | [Deploy script](docs/fork/deploy.md) for scope and WAN, with automatic rollback. | n/a |
 
-| Metric | Value |
-|--------|-------|
-| Packet queries | **< 1 ms** (in-memory) |
-| All API endpoints | **< 100 ms** |
-| Memory (56K packets) | **~300 MB** (vs 1.3 GB on Node.js) |
-| WebSocket broadcast | **Real-time** to all connected browsers |
-| Channel decryption | **AES-128-ECB** with rainbow table |
-| GOMEMLIMIT (memory-constrained hosts) | **set to ≥1.5× working set** (e.g. 1536 MiB on a 2 GB Pi for a ~1 GB store). Lower values trigger a GC death-spiral. Configure via the `GOMEMLIMIT` env var or `runtime.maxMemoryMB` in `config.json`; env wins. Applies to both server and ingestor. See [#1010](https://github.com/Kpa-clawbot/CoreScope/issues/1010). |
+## Build, test and deploy
 
-See [PERFORMANCE.md](PERFORMANCE.md) for full benchmarks.
-
-## ✨ Features
-
-### 📡 Live Trace Map
-Real-time animated map with packet route visualization, VCR-style playback controls, and a retro LCD clock. Replay the last 24 hours of mesh activity, scrub through the timeline, or watch packets flow live at up to 8× speed.
-
-![Live VCR playback — watch packets flow across the Bay Area mesh](docs/screenshots/MeshVCR.gif)
-
-### 📦 Packet Feed
-Filterable real-time packet stream with byte-level breakdown, Excel-like resizable columns, and a detail pane. Toggle "My Nodes" to focus on your mesh.
-
-![Packets view](docs/screenshots/packets1.png)
-
-### 🗺️ Network Overview
-At-a-glance mesh stats — node counts, packet volume, observer coverage.
-
-![Network overview](docs/screenshots/mesh-overview.png)
-
-### 📊 Node Analytics
-Per-node deep dive with interactive charts: activity timeline, packet type breakdown, SNR distribution, hop count analysis, peer network graph, and hourly heatmap.
-
-![Node analytics](docs/screenshots/node-analytics.png)
-
-### 💬 Channel Chat
-Decoded group messages with sender names, @mentions, timestamps — like reading a Discord channel for your mesh.
-
-![Channels](docs/screenshots/channels1.png)
-
-### 📱 Mobile Ready
-Full experience on your phone — proper touch controls, iOS safe area support, and a compact VCR bar.
-
-<img src="docs/screenshots/Live-view-iOS.png" alt="Live view on iOS" width="300">
-
-### And More
-
-- **17 Analytics Tabs** — RF, topology, channels, hash stats, distance, route patterns, scopes, and more
-- **Node Directory** — searchable list with role tabs, detail panel, QR codes, advert timeline
-- **Packet Tracing** — follow individual packets across observers with SNR/RSSI timeline
-- **Observer Status** — health monitoring, packet counts, uptime, per-observer analytics
-- **Hash Collision Matrix** — detect address collisions across the mesh
-- **Scope Audit**: per repeater, which declared regions show no forwarding and which scopes it forwards without declaring them
-- **Channel Key Auto-Derivation** — hashtag channels (`#channel`) keys derived via SHA256
-- **Multi-Broker MQTT** — connect to multiple brokers with per-source IATA filtering
-- **Dark / Light Mode** — auto-detects system preference, map tiles swap too
-- **Theme Customizer** — design your theme in-browser, export as `theme.json`
-- **Global Search** — search packets, nodes, and channels (Ctrl+K)
-- **Shareable URLs** — deep links to packets, channels, and observer detail pages
-- **Protobuf API Contract** — typed API definitions in `proto/`
-- **Accessible** — ARIA patterns, keyboard navigation, screen reader support
-
-### Optional Features
-
-Off by default, enabled in `config.json`:
-
-- **User Accounts**: registration with email activation, settings sync, an admin area, hashtag channel proposals, mail notifications for watched nodes, and a personal data export. The dashboard stays public. See [docs/user-guide/accounts.md](docs/user-guide/accounts.md)
-- **Mobile RX Coverage**: crowdsourced coverage from phones connected to a companion radio, drawn as hex bins on the RX Coverage page and on each node's Reach page. See [docs/client-rx-coverage.md](docs/client-rx-coverage.md)
-
-## Quick Start
-
-### Pre-built Image (Recommended)
-
-No build step required — just run:
-
-```bash
-docker run -d --name corescope \
-  --restart=unless-stopped \
-  -p 80:80 -p 1883:1883 \
-  -v /your/data:/app/data \
-  ghcr.io/kpa-clawbot/corescope:latest
+```sh
+make build                   # host binaries into dist/
+make test && make vet        # Go tests
+sh test-all.sh               # frontend unit suites (needs Node)
 ```
 
-Open `http://localhost` — done. No config file needed; CoreScope starts with sensible defaults.
+- **Deploying to scope or WAN:** check out the release tag and run `scripts/sacmesh-deploy.sh [--dry-run] wan|scope|both`. See [docs/fork/deploy.md](docs/fork/deploy.md).
+- **Contributing:** work on a `sacmesh/<topic>` branch and open a PR to `master`; PRs are merged with a merge commit. Upstream's GitHub workflows do not run on this fork, so the Go and frontend suites above are the gate. Tag a release on `master` after merging.
+- **Upstream merges:** see [docs/fork/upstream-sync.md](docs/fork/upstream-sync.md) for the checks the fork's changes need.
 
-For HTTPS with a custom domain, add `-p 443:443` and mount your Caddyfile:
-```bash
-docker run -d --name corescope \
-  --restart=unless-stopped \
-  -p 80:80 -p 443:443 -p 1883:1883 \
-  -v /your/data:/app/data \
-  -v /your/Caddyfile:/etc/caddy/Caddyfile:ro \
-  -v /your/caddy-data:/data/caddy \
-  ghcr.io/kpa-clawbot/corescope:latest
-```
-
-Disable built-in services with `-e DISABLE_MOSQUITTO=true` or `-e DISABLE_CADDY=true`, or drop a `.env` file in your data volume. See [docs/deployment.md](docs/deployment.md) for the full reference.
-
-### Build from Source
-
-```bash
-git clone https://github.com/Kpa-clawbot/CoreScope.git
-cd CoreScope
-./manage.sh setup
-```
-
-The setup wizard walks you through config, domain, HTTPS, build, and run.
-
-```bash
-./manage.sh status       # Health check + packet/node counts
-./manage.sh logs         # Follow logs
-./manage.sh backup       # Backup database
-./manage.sh update       # Pull latest + rebuild + restart
-./manage.sh mqtt-test    # Check if observer data is flowing
-./manage.sh help         # All commands
-```
-
-### Configure
-
-Copy `config.example.json` to `config.json` and edit:
-
-```json
-{
-  "port": 3000,
-  "mqtt": {
-    "broker": "mqtt://localhost:1883",
-    "topic": "meshcore/+/+/packets"
-  },
-  "mqttSources": [
-    {
-      "name": "remote-feed",
-      "broker": "mqtts://remote-broker:8883",
-      "topics": ["meshcore/+/+/packets"],
-      "username": "user",
-      "password": "pass",
-      "iataFilter": ["SJC", "SFO", "OAK"]
-    }
-  ],
-  "channelKeys": {
-    "public": "8b3387e9c5cdea6ac9e5edbaa115cd72"
-  },
-  "defaultRegion": "SJC"
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `port` | HTTP server port (default: 3000) |
-| `mqtt.broker` | Local MQTT broker URL (`""` to disable) |
-| `mqttSources` | External MQTT broker connections (optional) |
-| `channelKeys` | Channel decryption keys (hex). Hashtag channels auto-derived via SHA256 |
-| `defaultRegion` | Default IATA region code for the UI |
-| `dbPath` | SQLite database path (default: `data/meshcore.db`) |
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `DB_PATH` | Override SQLite database path |
-| `GOMEMLIMIT` | Go soft memory limit, wins over `runtime.maxMemoryMB` |
-
-The HTTP port is set with `port` in `config.json` or the server's `-port` flag.
-
-## Architecture
-
-```
-                           ┌─────────────────────────────────────────────┐
-                           │              Docker Container               │
-                           │                                             │
-Observer → USB →           │  Mosquitto ──→ Go Ingestor ──→ SQLite DB   │
-  meshcoretomqtt → MQTT ──→│                    │                        │
-                           │              Go HTTP Server ──→ WebSocket   │
-                           │                    │               │        │
-                           │              Caddy (HTTPS) ←───────┘        │
-                           └────────────────────┼────────────────────────┘
-                                                │
-                                             Browser
-```
-
-**Two-process model:** The Go ingestor handles MQTT ingestion and packet decoding. The Go HTTP server loads all packets into an in-memory store on startup (5 indexes for fast lookups) and serves the REST API + WebSocket broadcast. Both are managed by supervisord inside a single container with Caddy for HTTPS and Mosquitto for local MQTT.
-
-## MQTT Setup
-
-1. **Flash an observer node** with `MESH_PACKET_LOGGING=1` build flag
-2. **Connect via USB** to a host running [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt)
-3. **Configure meshcoretomqtt** with your IATA region code and MQTT broker address
-4. **Packets appear** on topic `meshcore/{IATA}/{PUBKEY}/packets`
-
-To decode a single raw hex packet without storing it, use `POST /api/decode`.
-
-## Project Structure
-
-```
-corescope/
-├── cmd/
-│   ├── server/              # Go HTTP server + WebSocket + REST API
-│   │   ├── main.go          # Entry point
-│   │   ├── routes.go        # 40+ API endpoint handlers
-│   │   ├── store.go         # In-memory packet store (5 indexes)
-│   │   ├── db.go            # SQLite persistence layer
-│   │   ├── decoder.go       # MeshCore packet decoder
-│   │   ├── websocket.go     # WebSocket broadcast
-│   │   └── *_test.go        # Server tests
-│   └── ingestor/            # Go MQTT ingestor
-│       ├── main.go          # MQTT subscription + packet processing
-│       ├── decoder.go       # Packet decoder (shared logic)
-│       ├── db.go            # SQLite write path
-│       └── *_test.go        # Ingestor tests
-├── proto/                   # Protobuf API definitions
-├── public/                  # Vanilla JS frontend (no build step)
-│   ├── index.html           # SPA shell
-│   ├── app.js               # Router, WebSocket, utilities
-│   ├── packets.js           # Packet feed + hex breakdown
-│   ├── map.js               # Leaflet map + route visualization
-│   ├── live.js              # Live trace + VCR playback
-│   ├── channels.js          # Channel chat
-│   ├── nodes.js             # Node directory + detail views
-│   ├── analytics.js         # Analytics dashboard
-│   └── style.css            # CSS variable theming (light/dark)
-├── docker/
-│   ├── supervisord-go.conf  # Process manager (server + ingestor)
-│   ├── mosquitto.conf       # MQTT broker config
-│   ├── Caddyfile            # Reverse proxy + HTTPS
-│   └── entrypoint-go.sh     # Container entrypoint
-├── Dockerfile               # Multi-stage Go build + Alpine runtime
-├── config.example.json      # Example configuration
-├── tests/                   # Node.js test suite: unit/ (test-all.sh) and e2e/ (Playwright)
-├── test-all.sh              # Runs every suite in tests/unit
-└── tools/                   # Generators, E2E tests, utilities
-```
-
-## For Developers
-
-### Building
-
-```bash
-make build        # all four binaries for your machine, into dist/
-make build-server # just one
-make crossbuild   # static linux/amd64 + linux/arm64 binaries
-```
-
-The SQLite driver is [`mattn/go-sqlite3`](https://github.com/mattn/go-sqlite3), which
-is cgo, so a plain `GOOS=linux go build` from a Mac will not work: cross-compiling
-needs a C compiler that can target the other platform. `make crossbuild` uses
-[`zig`](https://ziglang.org/download/) as that compiler (install it and it just
-works) and links statically against musl, so the result is one self-contained file
-that runs on Alpine or scratch. The container build does the same thing — see
-`Dockerfile`.
-
-### Test Suite
-
-Go tests cover the backend, Node.js unit tests in `tests/unit/` cover the frontend logic, and Playwright tests in `tests/e2e/` validate the UI in a browser.
-
-```bash
-# Go backend tests
-cd cmd/server && go test ./... -v
-cd cmd/ingestor && go test ./... -v
-
-# Or across all 16 modules at once
-make test
-
-# Node.js frontend + integration tests
-npm test
-
-# Playwright E2E (requires running server on localhost:3000)
-node tests/e2e/test-e2e-playwright.js
-```
-
-### Generate Test Data
-
-```bash
-node tools/generate-packets.js --api --count 200
-```
-
-### Migrating from Node.js
-
-If you're running an existing Node.js deployment, see [docs/go-migration.md](docs/go-migration.md) for a step-by-step guide. The Go engine reads the same SQLite database and `config.json` — no data migration needed.
-
-## Contributing
-
-Contributions welcome. Please read [AGENTS.md](AGENTS.md) for coding conventions, testing requirements, and engineering principles before submitting a PR.
-
-**Live instance:** [analyzer.on8ar.eu](https://analyzer.on8ar.eu): all read endpoints are public, no auth required.
-
-**API Documentation:** CoreScope auto-generates an OpenAPI 3.0 spec. Browse the interactive Swagger UI at [`/api/docs`](https://analyzer.on8ar.eu/api/docs) or fetch the machine-readable spec at [`/api/spec`](https://analyzer.on8ar.eu/api/spec).
-
-## License
-
-GPL-3.0-or-later
+Fixes that make sense upstream are sent there too, e.g. [Kpa-clawbot/CoreScope#2478](https://github.com/Kpa-clawbot/CoreScope/pull/2478). Licensing and attribution are upstream's; this is not an upstream release.

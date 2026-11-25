@@ -18,7 +18,7 @@
 # Needs: a clean checkout at an exact v*+sacmesh.N tag, go, zig (static musl
 # cross-build, see Makefile), docker (through sudo unless DOCKER is set),
 # curl and python3. Paths are SacMesh's; WAN_DIR, SCOPE_DIR, WAN_HEALTH and
-# SCOPE_HEALTH override them. See docs/sacmesh-deploy.md.
+# SCOPE_HEALTH override them. See docs/fork/deploy.md.
 set -euo pipefail
 
 DRY_RUN=0
